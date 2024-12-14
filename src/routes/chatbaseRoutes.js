@@ -2,11 +2,16 @@
 
 const express = require('express');
 const router = express.Router();
-const chatbaseController = require('../controllers/chatbaseController');
+const {
+    handleServiciosPublicos,
+    handleTelecomunicaciones,
+} = require('../controllers/chatbaseController'); // Importar solo las funciones necesarias
 
 // Rutas para Chatbase
-router.post('/servicios_publicos', chatbaseController.handleServiciosPublicos);
-router.post('/telecomunicaciones', chatbaseController.handleTelecomunicaciones);
-router.post('/transporte_aereo', chatbaseController.handleTransporteAereo);
+router.post('/servicios_publicos', handleServiciosPublicos);
+router.post('/telecomunicaciones', handleTelecomunicaciones);
+
+// Ruta eliminada o pendiente de implementación
+// router.post('/transporte_aereo', handleTransporteAereo);
 
 module.exports = router;
