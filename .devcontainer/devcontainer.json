@@ -1,0 +1,10 @@
+{
+    "name": "My Codespace",
+    "forwardPorts": [3000],
+    "portsAttributes": {
+      "3000": {
+        "visibility": "public"
+      }
+    }
+  }
+  

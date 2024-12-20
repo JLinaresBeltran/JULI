@@ -1,43 +1,17 @@
-// Estructura inicial del proyecto con Express y configuraciones básicas
-
-const express = require('express');
-const bodyParser = require('body-parser');
-const dotenv = require('dotenv');
-const morgan = require('morgan');
-const routes = require('./routes');
 const http = require('http');
+const app = require('./app'); // Importar la configuración de app.js
 
-// Cargar variables de entorno
-dotenv.config();
-
-const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middlewares
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(morgan('dev'));
 
-// Configuración de rutas
-app.use('/', routes);
-
-// Endpoint para health-check
-app.get('/health', (req, res) => {
-    res.status(200).json({ message: 'Server is running' });
+app.use((req, res, next) => {
+    console.log(`Solicitud recibida: ${req.method} ${req.url}`);
+    next();
 });
 
-// Manejo de errores
-defaultErrorHandler = (err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).send({ error: 'An error occurred!' });
-};
-
-app.use(defaultErrorHandler);
 
 // Crear servidor y escuchar conexiones
 const server = http.createServer(app);
-server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+server.listen(PORT, '0.0.0.0', () => { // Escuchar en todas las interfaces
+    console.log(`Servidor corriendo en http://0.0.0.0:${PORT}`);
 });
-
-module.exports = app;

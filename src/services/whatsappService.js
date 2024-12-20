@@ -1,32 +1,28 @@
-// Archivo whatsappService.js (services/whatsappService.js)
 const axios = require('axios');
 
-const sendWhatsAppMessage = async (phoneNumber, message) => {
-    try {
-        const apiUrl = process.env.WHATSAPP_API_URL;
-        const token = process.env.WHATSAPP_API_TOKEN;
+const WHATSAPP_API_URL = 'https://graph.facebook.com/v21.0';
 
+const sendMessage = async (to, templateName) => {
+    try {
         const response = await axios.post(
-            `${apiUrl}/messages`,
+            `${WHATSAPP_API_URL}/${process.env.PHONE_NUMBER_ID}/messages`,
             {
-                to: phoneNumber,
-                type: 'text',
-                text: { body: message },
+                messaging_product: 'whatsapp',
+                to: to,
+                type: 'template',
+                template: {
+                    name: templateName,
+                    language: { code: 'en_US' },
+                },
             },
             {
                 headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${process.env.ACCESS_TOKEN}`,
                 },
             }
         );
-
-        console.log('WhatsApp message sent:', response.data);
-        return response.data;
+        console.log('Mensaje enviado:', response.data);
     } catch (error) {
-        console.error('Error sending WhatsApp message:', error);
-        throw error;
+        console.error('Error enviando mensaje:', error.response?.data || error.message);
     }
 };
-
-module.exports = { sendWhatsAppMessage };
