@@ -1,7 +1,11 @@
 const express = require('express');
-const { processWebhook } = require('../controllers/webhookController');
 const router = express.Router();
+const webhookController = require('../controllers/webhookController'); // Importa el controlador
 
-router.post('/', processWebhook);
+// Ruta de verificación del webhook
+router.get('/', webhookController.verifyWebhook);
+
+// Ruta para recibir mensajes entrantes
+router.post('/', webhookController.receiveMessage);
 
 module.exports = router;
