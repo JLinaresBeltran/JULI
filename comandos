@@ -1,2 +1,2 @@
-zip -r controllers.zip src/controllers ////archivo especifico
+zip -r controllers.zip src ////archivo especifico
 zip -r src.zip src  ///// Todo el contenido de src
