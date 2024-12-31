@@ -1,0 +1,18 @@
+{
+  "customerName": "Carlos Eduardo Ramírez López",
+  "companyName": "CLARO (COMUNICACIÓN CELULAR S.A. COMCEL S.A.)",
+  "reference": "Reclamación por incumplimiento en la calidad del servicio de internet",
+  "hechos": [
+    "El 1 de diciembre de 2023, contraté un plan de internet de fibra óptica con una velocidad nominal de 300MB, bajo el número de contrato TEL789012.",
+    "Desde la activación del servicio, he experimentado una velocidad de conexión que no supera los 50MB, a pesar de realizar pruebas de velocidad en diferentes momentos del día.",
+    "He intentado resolver esta situación comunicándome con el servicio de atención al cliente en varias ocasiones, registrando los tickets de soporte #T123456 y #T123457.",
+    "En cada interacción, he expuesto de manera clara y documentada la discrepancia entre la velocidad contratada y la efectivamente recibida, así como la frecuencia de caídas del servicio.",
+    "A pesar de mis reiterados esfuerzos por obtener una solución, la empresa no ha proporcionado una respuesta satisfactoria, lo que ha generado un profundo malestar e impotencia ante la falta de atención a mi situación."
+  ],
+  "peticion": "Solicito a la empresa Claro (COMUNICACIÓN CELULAR S.A. COMCEL S.A.) que se realice una revisión exhaustiva de mi servicio de internet de fibra óptica, garantizando que se cumpla con la velocidad contratada de 300MB, así como la estabilidad del servicio. Exijo una respuesta formal y efectiva que contemple la solución a los problemas mencionados, así como la compensación correspondiente por el incumplimiento en la calidad del servicio prestado.",
+  "metadata": {
+    "tipo_servicio": "Internet Fibra Óptica",
+    "timestamp": "2024-12-31T15:04:07.602Z",
+    "version": "1.0"
+  }
+}

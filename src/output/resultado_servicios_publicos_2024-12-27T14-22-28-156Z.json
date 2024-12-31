@@ -1,0 +1,14 @@
+{
+  "customerName": "Ana María González Silva",
+  "companyName": "COMUNICACIONES CLARO S.A.",
+  "reference": "Reclamación por falta de servicio de internet",
+  "hechos": [
+    "No se encontraron hechos"
+  ],
+  "peticion": "No se encontró petición",
+  "metadata": {
+    "tipo_servicio": "Acueducto",
+    "timestamp": "2024-12-27T14:22:28.156Z",
+    "version": "1.0"
+  }
+}

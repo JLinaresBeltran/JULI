@@ -1,9 +1,9 @@
-// src/templates/index.js
-
+const serviciosPublicosTemplate = require('./serviciosPublicos');
 const telecomunicacionesTemplate = require('./telecomunicaciones');
 const transporteAereoTemplate = require('./transporteAereo');
 
 const templates = {
+    servicios_publicos: serviciosPublicosTemplate,
     telecomunicaciones: telecomunicacionesTemplate,
     transporte_aereo: transporteAereoTemplate
 };

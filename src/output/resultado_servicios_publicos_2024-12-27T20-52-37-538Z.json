@@ -1,0 +1,21 @@
+{
+  "customerName": "Ana María González Silva",
+  "companyName": "EMPRESA DE ACUEDUCTO Y ALCANTARILLADO DE BOGOTÁ E.S.P.",
+  "reference": "Reclamación por discrepancia en facturación de servicio de acueducto",
+  "hechos": [
+    "En el mes de enero de 2024, recibí una factura de agua correspondiente a mi cuenta de contrato número 12345678, la cual asciende a un monto de $500.000.",
+    "Este monto es significativamente superior al promedio habitual que pago, que ronda los $80.000 mensuales.",
+    "La factura refleja un consumo de 45m3, mientras que mi consumo habitual es de solo 12m3, lo que genera una evidente discrepancia.",
+    "Ante esta situación, procedí a verificar si existían fugas en mi domicilio, confirmando que no encontré ninguna anomalía que justificara el incremento en el consumo.",
+    "Con el fin de buscar una solución, registré un reclamo formal bajo el número RAD98765, solicitando la revisión de mi caso.",
+    "A pesar de mis esfuerzos, hasta la fecha no he recibido respuesta alguna por parte de la empresa, lo que ha generado en mí una creciente preocupación e impotencia ante la falta de atención a mi situación."
+  ],
+  "peticion": "Solicito a la EMPRESA DE ACUEDUCTO Y ALCANTARILLADO DE BOGOTÁ E.S.P. la revisión inmediata de la factura emitida por un monto de $500.000 correspondiente al periodo de enero de 2024, así como la rectificación del consumo registrado, dado que este no refleja la realidad de mi uso del servicio. Exijo una respuesta formal a mi reclamo RAD98765, así como la aclaración de las razones que llevaron a la emisión de una factura tan desproporcionada.",
+  "metadata": {
+    "cuenta_contrato": "12345678",
+    "tipo_servicio": "Acueducto",
+    "periodo_facturacion": "Enero 2024",
+    "timestamp": "2024-12-27T20:52:37.538Z",
+    "version": "1.0"
+  }
+}
