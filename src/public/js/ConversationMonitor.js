@@ -66,31 +66,62 @@ const ConversationMonitor = () => {
     const [socket, setSocket] = useState(null);
 
     useEffect(() => {
-        // Cargar conversaciones iniciales
-        fetchConversations();
-
-        // Configurar WebSocket
-        const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
-        const ws = new WebSocket(wsUrl);
+        let ws;
+        let reconnectTimeout;
         
-        ws.onopen = () => {
-            console.log('WebSocket conectado');
+        const connect = () => {
+            try {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}/ws`;
+                
+                ws = new WebSocket(wsUrl);
+                setSocket(ws);
+                
+                ws.onopen = () => {
+                    console.log('WebSocket conectado');
+                    setError(null);
+                };
+                
+                ws.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.type === 'conversations') {
+                            setConversations(data.data);
+                            setLoading(false);
+                        }
+                    } catch (error) {
+                        console.error('Error procesando mensaje:', error);
+                    }
+                };
+                
+                ws.onerror = (error) => {
+                    console.error('Error de WebSocket:', error);
+                    setError('Error de conexión');
+                };
+                
+                ws.onclose = () => {
+                    console.log('WebSocket desconectado');
+                    // Intentar reconexión después de 5 segundos
+                    reconnectTimeout = setTimeout(connect, 5000);
+                };
+            } catch (error) {
+                console.error('Error iniciando WebSocket:', error);
+                setError('Error de conexión');
+                // Fallback a polling
+                fetchConversations();
+            }
         };
-
-        ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            handleWebSocketMessage(data);
-        };
-
-        ws.onerror = (error) => {
-            console.error('Error de WebSocket:', error);
-            setError('Error de conexión en tiempo real');
-        };
-
-        setSocket(ws);
-
+        
+        connect();
+        
+        // Cleanup
         return () => {
-            if (ws) ws.close();
+            if (ws) {
+                ws.close();
+            }
+            if (reconnectTimeout) {
+                clearTimeout(reconnectTimeout);
+            }
         };
     }, []);
 
@@ -107,50 +138,6 @@ const ConversationMonitor = () => {
             setError(err.message);
         } finally {
             setLoading(false);
-        }
-    };
-
-    const handleWebSocketMessage = (message) => {
-        switch (message.type) {
-            case 'new_conversation':
-                setConversations(prev => [...prev, message.conversation]);
-                break;
-            case 'new_message':
-                updateConversationWithMessage(message.conversationId, message.message);
-                break;
-            case 'conversation_closed':
-                removeConversation(message.conversationId);
-                break;
-            default:
-                console.log('Mensaje no manejado:', message);
-        }
-    };
-
-    const updateConversationWithMessage = (conversationId, message) => {
-        setConversations(prev => prev.map(conv => {
-            if (conv.whatsappId === conversationId) {
-                return {
-                    ...conv,
-                    messages: [...conv.messages, message],
-                    lastUpdateTime: new Date()
-                };
-            }
-            return conv;
-        }));
-
-        // Actualizar conversación seleccionada si corresponde
-        if (selectedConversation?.whatsappId === conversationId) {
-            setSelectedConversation(prev => ({
-                ...prev,
-                messages: [...prev.messages, message]
-            }));
-        }
-    };
-
-    const removeConversation = (conversationId) => {
-        setConversations(prev => prev.filter(conv => conv.whatsappId !== conversationId));
-        if (selectedConversation?.whatsappId === conversationId) {
-            setSelectedConversation(null);
         }
     };
 

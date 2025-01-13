@@ -4,12 +4,16 @@ const { app, server } = require('./app');
 const PORT = process.env.PORT || 3000;
 const HOST = '0.0.0.0';
 
-server.listen(PORT, HOST, () => {
-    console.log('\n🚀 Servidor iniciado');
-    console.log(`📱 Monitor disponible en: https://app-juridica.herokuapp.com/monitor`);
-    console.log(`🔍 Health check en: https://app-juridica.herokuapp.com/health`);
-    console.log(`🌐 WebSocket habilitado en: wss://app-juridica.herokuapp.com/ws`);
-    console.log('\n');
+server.listen(PORT, '0.0.0.0', () => {
+    const baseUrl = process.env.APP_URL || `http://localhost:${PORT}`;
+    const wsUrl = baseUrl.replace(/^http/, 'ws');
+    
+    console.log('\n=== JULI Server Started ===');
+    console.log('📱 Monitor:', `${baseUrl}/monitor`);
+    console.log('🔍 Health:', `${baseUrl}/health`);
+    console.log('🌐 WebSocket:', `${wsUrl}/ws`);
+    console.log('⚙️ Environment:', process.env.NODE_ENV);
+    console.log('========================\n');
 });
 
 // Manejo de errores del servidor

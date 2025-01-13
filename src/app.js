@@ -5,6 +5,7 @@ const path = require('path');
 const http = require('http');
 const WebSocket = require('ws');
 const routes = require('./routes');
+const conversationService = require('./services/conversationService'); // Añadir esta importación
 
 // Cargar variables de entorno
 dotenv.config();
@@ -12,8 +13,11 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 
-// Configuración de WebSocket
-const wss = new WebSocket.Server({ server });
+// Configuración de WebSocket con ruta específica
+const wss = new WebSocket.Server({ 
+    server,
+    path: '/ws' // Especificar la ruta del WebSocket
+});
 
 // Manejador de conexiones WebSocket
 wss.on('connection', (ws) => {
@@ -22,14 +26,23 @@ wss.on('connection', (ws) => {
     // Enviar actualizaciones de conversaciones
     const sendConversationUpdates = async () => {
         try {
-            // Asumiendo que conversationService está disponible globalmente
-            // Si no lo está, necesitarás importarlo o pasarlo como dependencia
-            const conversations = Array.from(conversationService.activeConversations.values());
-            ws.send(JSON.stringify({ 
-                type: 'conversations', 
-                data: conversations,
-                timestamp: new Date().toISOString()
-            }));
+            const conversations = Array.from(conversationService.activeConversations.values())
+                .map(conv => ({
+                    whatsappId: conv.whatsappId,
+                    userPhoneNumber: conv.userPhoneNumber,
+                    messages: conv.messages,
+                    startTime: conv.startTime,
+                    lastUpdateTime: conv.lastUpdateTime,
+                    status: conv.status
+                }));
+
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ 
+                    type: 'conversations', 
+                    data: conversations,
+                    timestamp: new Date().toISOString()
+                }));
+            }
         } catch (error) {
             console.error('Error al enviar actualización de conversaciones:', error);
         }
@@ -40,6 +53,16 @@ wss.on('connection', (ws) => {
     
     // Configurar intervalo de actualización
     const interval = setInterval(sendConversationUpdates, 5000);
+    
+    // Manejar mensajes del cliente
+    ws.on('message', (message) => {
+        try {
+            const data = JSON.parse(message);
+            console.log('Mensaje recibido del cliente:', data);
+        } catch (error) {
+            console.error('Error al procesar mensaje del cliente:', error);
+        }
+    });
     
     // Manejar errores de WebSocket
     ws.on('error', (error) => {
