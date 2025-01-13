@@ -1,5 +1,6 @@
 // src/controllers/webhookController.js
 const conversationService = require('../services/conversationService');
+const whatsappService = require('../services/whatsappService');
 const { logInfo, logError } = require('../utils/logger');
 
 exports.verifyWebhook = (req, res) => {
@@ -8,32 +9,51 @@ exports.verifyWebhook = (req, res) => {
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
 
-    logInfo('Verificación de webhook recibida', { mode, token });
+    logInfo('Verificación de webhook recibida', { 
+        mode, 
+        tokenMatch: token === VERIFY_TOKEN,
+        hasChallenge: !!challenge
+    });
 
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
         logInfo('Webhook verificado exitosamente');
         res.status(200).send(challenge);
     } else {
-        logError('Fallo en verificación de webhook', { mode, token });
+        logError('Fallo en verificación de webhook', { 
+            mode, 
+            tokenMatch: token === VERIFY_TOKEN 
+        });
         res.status(403).send('Forbidden');
     }
 };
 
 exports.receiveMessage = async (req, res) => {
     try {
+        // Validar token de WhatsApp en headers si es necesario
+        const authHeader = req.headers['authorization'];
+        if (!authHeader) {
+            logInfo('Recibida solicitud sin token de autorización');
+        }
+
         const body = req.body;
-        logInfo('Webhook - Mensaje recibido', { body: JSON.stringify(body, null, 2) });
+        logInfo('Webhook - Mensaje recibido', { 
+            object: body.object,
+            entryCount: body.entry?.length
+        });
 
         if (body.object === 'whatsapp_business_account') {
             for (const entry of body.entry) {
                 for (const change of entry.changes) {
                     if (change.value.messages) {
+                        const messages = change.value.messages;
+                        const contacts = change.value.contacts;
+                        
                         logInfo('Procesando mensajes', { 
-                            messages: change.value.messages,
-                            contacts: change.value.contacts 
+                            messageCount: messages.length,
+                            hasContacts: !!contacts
                         });
 
-                        for (const message of change.value.messages) {
+                        for (const message of messages) {
                             const messageData = {
                                 id: message.id,
                                 from: message.from,
@@ -41,31 +61,54 @@ exports.receiveMessage = async (req, res) => {
                                 type: message.type,
                                 text: message.text?.body,
                                 audio: message.audio?.id,
-                                profile: change.value.contacts?.[0]
+                                profile: contacts?.[0],
+                                status: message.status || 'received'
                             };
 
-                            logInfo('Procesando mensaje individual', messageData);
+                            logInfo('Procesando mensaje individual', {
+                                messageId: messageData.id,
+                                type: messageData.type,
+                                from: messageData.from
+                            });
 
                             try {
+                                // Procesar el mensaje
                                 const conversation = await conversationService.processIncomingMessage(messageData);
+                                
+                                // Si es un mensaje de texto, enviar confirmación de recepción
+                                if (messageData.type === 'text') {
+                                    await whatsappService.sendReadReceipt(messageData.from, messageData.id);
+                                }
+
                                 logInfo('Mensaje procesado correctamente', {
                                     conversationId: conversation.whatsappId,
-                                    messageCount: conversation.messages.length
+                                    messageCount: conversation.messages.length,
+                                    lastStatus: conversation.messages[conversation.messages.length - 1]?.status
                                 });
                             } catch (error) {
                                 logError('Error procesando mensaje individual', {
                                     error: error.message,
-                                    messageData
+                                    messageId: messageData.id,
+                                    type: messageData.type
                                 });
                             }
                         }
                     }
                 }
             }
-            res.status(200).send('Evento procesado');
+            
+            // Meta requiere una respuesta 200 OK para los webhooks
+            res.status(200).send('EVENT_RECEIVED');
         } else {
-            logError('Objeto no reconocido en webhook', { object: body.object });
-            res.status(400).json({ error: 'Objeto no válido' });
+            logError('Objeto no reconocido en webhook', { 
+                object: body.object,
+                expectedObject: 'whatsapp_business_account'
+            });
+            // Aún así devolvemos 200 para webhooks de Meta
+            res.status(200).json({ 
+                received: true,
+                error: 'Objeto no válido' 
+            });
         }
     } catch (error) {
         logError('Error general en webhook', {
@@ -73,7 +116,7 @@ exports.receiveMessage = async (req, res) => {
             stack: error.stack
         });
         // Siempre devolver 200 para webhook de Meta
-        res.status(200).send('Error procesado');
+        res.status(200).send('ERROR_HANDLED');
     }
 };
 
@@ -100,12 +143,16 @@ exports.getConversations = async (req, res) => {
         }));
 
         logInfo('Enviando listado de conversaciones', {
-            count: formattedConversations.length
+            count: formattedConversations.length,
+            activeConversations: formattedConversations.length
         });
 
         res.status(200).json(formattedConversations);
     } catch (error) {
-        logError('Error obteniendo conversaciones', error);
+        logError('Error obteniendo conversaciones', {
+            error: error.message,
+            stack: error.stack
+        });
         res.status(500).json({ 
             error: 'Error obteniendo conversaciones',
             message: error.message 
@@ -119,12 +166,19 @@ exports.getConversationAnalytics = async (req, res) => {
         const analytics = await conversationService.getConversationAnalytics();
         
         logInfo('Analytics generados correctamente', {
-            activeConversations: analytics.activeConversations
+            activeConversations: analytics.activeConversations,
+            totalMessages: analytics.conversations.reduce((acc, conv) => acc + conv.messageCount, 0)
         });
         
         res.status(200).json(analytics);
     } catch (error) {
-        logError('Error generando analytics', error);
-        res.status(500).json({ error: 'Error interno del servidor' });
+        logError('Error generando analytics', {
+            error: error.message,
+            stack: error.stack
+        });
+        res.status(500).json({ 
+            error: 'Error interno del servidor',
+            message: error.message 
+        });
     }
 };
