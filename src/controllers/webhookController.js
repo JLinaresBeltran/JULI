@@ -29,28 +29,17 @@ exports.verifyWebhook = (req, res) => {
 
 exports.receiveMessage = async (req, res) => {
     try {
-        // Validar token de WhatsApp en headers si es necesario
-        const authHeader = req.headers['authorization'];
-        if (!authHeader) {
-            logInfo('Recibida solicitud sin token de autorización');
-        }
-
         const body = req.body;
-        logInfo('Webhook - Mensaje recibido', { 
-            object: body.object,
-            entryCount: body.entry?.length
-        });
-
+        console.log('Mensaje de WhatsApp recibido:', JSON.stringify(body, null, 2));
+        
         if (body.object === 'whatsapp_business_account') {
             for (const entry of body.entry) {
                 for (const change of entry.changes) {
                     if (change.value.messages) {
                         const messages = change.value.messages;
-                        const contacts = change.value.contacts;
                         
                         logInfo('Procesando mensajes', { 
-                            messageCount: messages.length,
-                            hasContacts: !!contacts
+                            messageCount: messages.length
                         });
 
                         for (const message of messages) {
@@ -61,7 +50,7 @@ exports.receiveMessage = async (req, res) => {
                                 type: message.type,
                                 text: message.text?.body,
                                 audio: message.audio?.id,
-                                profile: contacts?.[0],
+                                profile: change.value.contacts?.[0],
                                 status: message.status || 'received'
                             };
 
@@ -100,6 +89,7 @@ exports.receiveMessage = async (req, res) => {
             // Meta requiere una respuesta 200 OK para los webhooks
             res.status(200).send('EVENT_RECEIVED');
         } else {
+            console.log('Objeto no reconocido:', body.object);
             logError('Objeto no reconocido en webhook', { 
                 object: body.object,
                 expectedObject: 'whatsapp_business_account'
@@ -111,12 +101,13 @@ exports.receiveMessage = async (req, res) => {
             });
         }
     } catch (error) {
+        console.error('Error procesando mensaje:', error);
         logError('Error general en webhook', {
             error: error.message,
             stack: error.stack
         });
         // Siempre devolver 200 para webhook de Meta
-        res.status(200).send('ERROR_HANDLED');
+        res.status(200).send('EVENT_RECEIVED');
     }
 };
 

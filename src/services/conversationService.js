@@ -1,6 +1,7 @@
 const { transcribeAudio, synthesizeText } = require('../integrations/googleSTT');
 const { sendMessageToChatbase } = require('../integrations/chatbaseClient');
 const { logInfo, logError } = require('../utils/logger');
+const EventEmitter = require('events');
 
 class Conversation {
     constructor(whatsappId, userPhoneNumber) {
@@ -89,34 +90,17 @@ class Conversation {
     }
 }
 
-class ConversationService {
+class ConversationService extends EventEmitter {
     constructor() {
+        super();
         this.activeConversations = new Map();
         this.conversationTimeout = 30 * 60 * 1000; // 30 minutos
-        this.eventListeners = new Set();
         
         // Iniciar el sistema de limpieza automática
         this.startCleanupInterval();
         
         logInfo('Servicio de conversaciones iniciado', {
             timeoutMinutes: this.conversationTimeout / 60000
-        });
-    }
-
-    // Suscripción a eventos
-    subscribe(listener) {
-        this.eventListeners.add(listener);
-        return () => this.eventListeners.delete(listener);
-    }
-
-    // Notificar cambios
-    notifyUpdate(type, data) {
-        this.eventListeners.forEach(listener => {
-            try {
-                listener({ type, data, timestamp: new Date() });
-            } catch (error) {
-                logError('Error en listener de eventos', { error });
-            }
         });
     }
 
@@ -135,7 +119,9 @@ class ConversationService {
             timestamp: conversation.startTime 
         });
 
-        this.notifyUpdate('conversation_created', { conversation: conversation.toJSON() });
+        // Emitir evento de creación de conversación
+        this.emit('conversationCreated', conversation.toJSON());
+        
         return conversation;
     }
 
@@ -179,7 +165,8 @@ class ConversationService {
                     });
                 }
 
-                this.notifyUpdate('message_received', {
+                // Emitir evento de mensaje recibido
+                this.emit('messageReceived', {
                     conversationId: whatsappId,
                     message: conversation.getLastMessage()
                 });
@@ -190,6 +177,7 @@ class ConversationService {
             return conversation;
         } catch (error) {
             logError('Error procesando mensaje entrante', error);
+            this.emit('error', error);
             throw error;
         }
     }
@@ -230,7 +218,8 @@ class ConversationService {
             messageCount: conversation.messages.length
         });
 
-        this.notifyUpdate('conversation_closed', {
+        // Emitir evento de cierre de conversación
+        this.emit('conversationClosed', {
             whatsappId,
             summary: conversation.toJSON()
         });
@@ -255,7 +244,21 @@ class ConversationService {
             timestamp: new Date()
         });
 
+        // Emitir evento de actualización de analytics
+        this.emit('analyticsGenerated', analytics);
+
         return analytics;
+    }
+
+    // Método para verificar el timeout de la conversación (añadido para completar el método mencionado)
+    async checkConversationTimeout(whatsappId) {
+        const conversation = this.getConversation(whatsappId);
+        if (!conversation) return;
+
+        const timeSinceLastUpdate = Date.now() - conversation.lastUpdateTime;
+        if (timeSinceLastUpdate > this.conversationTimeout) {
+            await this.closeConversation(whatsappId);
+        }
     }
 }
 
