@@ -118,16 +118,13 @@
             const [wsStatus, setWsStatus] = useState('connecting');
             const wsRef = useRef(null);
             const messagesEndRef = useRef(null);
+            const retryTimeoutRef = useRef(null);
 
             const scrollToBottom = () => {
                 messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
             };
 
-            useEffect(() => {
-                // Cargar conversaciones iniciales
-                fetchConversations();
-
-                // Configurar WebSocket
+            const connectWebSocket = () => {
                 const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
                 const ws = new WebSocket(wsUrl);
                 wsRef.current = ws;
@@ -136,12 +133,20 @@
                     console.log('WebSocket conectado');
                     setWsStatus('connected');
                     setError(null);
+                    if (retryTimeoutRef.current) {
+                        clearTimeout(retryTimeoutRef.current);
+                        retryTimeoutRef.current = null;
+                    }
                 };
 
                 ws.onmessage = (event) => {
                     try {
                         const data = JSON.parse(event.data);
-                        handleWebSocketMessage(data);
+                        if (data.type === 'conversations') {
+                            setConversations(data.data);
+                            setError(null);
+                            setLoading(false);
+                        }
                     } catch (err) {
                         console.error('Error procesando mensaje:', err);
                     }
@@ -150,21 +155,36 @@
                 ws.onclose = () => {
                     console.log('WebSocket desconectado');
                     setWsStatus('disconnected');
-                    // Intentar reconectar después de 5 segundos
-                    setTimeout(() => {
-                        if (wsRef.current?.readyState === WebSocket.CLOSED) {
-                            wsRef.current = new WebSocket(wsUrl);
-                        }
-                    }, 5000);
+                    retryConnection();
                 };
 
                 ws.onerror = (error) => {
                     console.error('Error WebSocket:', error);
                     setWsStatus('error');
                     setError('Error de conexión en tiempo real');
+                    fetchConversations(); // Fallback a polling
                 };
 
+                return ws;
+            };
+
+            const retryConnection = () => {
+                if (!retryTimeoutRef.current) {
+                    retryTimeoutRef.current = setTimeout(() => {
+                        console.log('Intentando reconexión...');
+                        connectWebSocket();
+                        retryTimeoutRef.current = null;
+                    }, 5000);
+                }
+            };
+
+            useEffect(() => {
+                const ws = connectWebSocket();
+
                 return () => {
+                    if (retryTimeoutRef.current) {
+                        clearTimeout(retryTimeoutRef.current);
+                    }
                     if (ws.readyState === WebSocket.OPEN) {
                         ws.close();
                     }
@@ -188,57 +208,6 @@
                     setError(err.message);
                 } finally {
                     setLoading(false);
-                }
-            };
-
-            const handleWebSocketMessage = (message) => {
-                console.log('Mensaje WebSocket recibido:', message);
-                switch (message.type) {
-                    case 'new_conversation':
-                        setConversations(prev => [...prev, message.conversation]);
-                        break;
-                    case 'new_message':
-                        updateConversationWithMessage(message.conversationId, message.message);
-                        break;
-                    case 'conversation_closed':
-                        removeConversation(message.conversationId);
-                        break;
-                    default:
-                        console.log('Tipo de mensaje no manejado:', message.type);
-                }
-            };
-
-            const updateConversationWithMessage = (conversationId, message) => {
-                setConversations(prev => prev.map(conv => {
-                    if (conv.whatsappId === conversationId) {
-                        const updatedMessages = [...conv.messages, message];
-                        return {
-                            ...conv,
-                            messages: updatedMessages,
-                            lastUpdateTime: new Date(),
-                            metadata: {
-                                ...conv.metadata,
-                                hasUnreadMessages: true
-                            }
-                        };
-                    }
-                    return conv;
-                }));
-
-                if (selectedConversation?.whatsappId === conversationId) {
-                    setSelectedConversation(prev => ({
-                        ...prev,
-                        messages: [...prev.messages, message]
-                    }));
-                }
-            };
-
-            const removeConversation = (conversationId) => {
-                setConversations(prev => 
-                    prev.filter(conv => conv.whatsappId !== conversationId)
-                );
-                if (selectedConversation?.whatsappId === conversationId) {
-                    setSelectedConversation(null);
                 }
             };
 

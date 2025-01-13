@@ -2,12 +2,56 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const dotenv = require('dotenv');
 const path = require('path');
+const http = require('http');
+const WebSocket = require('ws');
 const routes = require('./routes');
 
 // Cargar variables de entorno
 dotenv.config();
 
 const app = express();
+const server = http.createServer(app);
+
+// Configuración de WebSocket
+const wss = new WebSocket.Server({ server });
+
+// Manejador de conexiones WebSocket
+wss.on('connection', (ws) => {
+    console.log('Cliente WebSocket conectado');
+    
+    // Enviar actualizaciones de conversaciones
+    const sendConversationUpdates = async () => {
+        try {
+            // Asumiendo que conversationService está disponible globalmente
+            // Si no lo está, necesitarás importarlo o pasarlo como dependencia
+            const conversations = Array.from(conversationService.activeConversations.values());
+            ws.send(JSON.stringify({ 
+                type: 'conversations', 
+                data: conversations,
+                timestamp: new Date().toISOString()
+            }));
+        } catch (error) {
+            console.error('Error al enviar actualización de conversaciones:', error);
+        }
+    };
+    
+    // Enviar actualización inicial
+    sendConversationUpdates();
+    
+    // Configurar intervalo de actualización
+    const interval = setInterval(sendConversationUpdates, 5000);
+    
+    // Manejar errores de WebSocket
+    ws.on('error', (error) => {
+        console.error('Error en WebSocket:', error);
+    });
+    
+    // Limpiar recursos cuando se cierra la conexión
+    ws.on('close', () => {
+        console.log('Cliente WebSocket desconectado');
+        clearInterval(interval);
+    });
+});
 
 // Middleware para procesar JSON y formularios
 app.use(bodyParser.json());
@@ -48,7 +92,8 @@ app.use('/api', routes);
 app.get('/health', (req, res) => {
     res.status(200).json({ 
         status: 'healthy',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        websocketClients: wss.clients.size
     });
 });
 
@@ -69,4 +114,5 @@ app.use((req, res) => {
     });
 });
 
-module.exports = app;
+// Exportar tanto app como server para poder iniciar el servidor HTTP y WebSocket
+module.exports = { app, server };
