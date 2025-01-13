@@ -1,8 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const webhookRoutes = require('./webhookRoutes'); // Importar las rutas del webhook
+const webhookRoutes = require('./webhookRoutes');
+const chatbaseRoutes = require('./chatbaseRoutes');
 
-// Usar las rutas del webhook bajo /webhook
+// Rutas de webhook
 router.use('/webhook', webhookRoutes);
+
+// Rutas de chatbase
+router.use('/chatbase', chatbaseRoutes);
 
 module.exports = router;
