@@ -2,15 +2,20 @@
 const WebSocket = require('ws');
 const EventEmitter = require('events');
 
-class WebSocketManager extends EventEmitter {
-    constructor(server) {
-        super();
-        this.wss = new WebSocket.Server({ server });
+class WebSocketManager {
+    constructor() {
+        this.wss = null;
         this.connections = new Map();
         this.heartbeatInterval = 45000; // 45 segundos
-        this.setupWebSocket();
+    }
+
+    initialize(server) {
+        if (this.wss) {
+            return; // Ya inicializado
+        }
         
-        // Suscribirse a eventos de conversación
+        this.wss = new WebSocket.Server({ server });
+        this.setupWebSocket();
         this.setupConversationEvents();
     }
 
@@ -135,9 +140,9 @@ class WebSocketManager extends EventEmitter {
 let instance = null;
 
 module.exports = {
-    getInstance: (server) => {
+    getInstance: () => {
         if (!instance) {
-            instance = new WebSocketManager(server);
+            instance = new WebSocketManager();
         }
         return instance;
     }

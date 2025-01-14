@@ -37,7 +37,10 @@ class JuliServer {
     }
 
     setupWebSocket() {
-        this.wsManager = new WebSocketManager(this.server);
+        // Obtener la instancia del WebSocket Manager
+        this.wsManager = WebSocketManager.getInstance();
+        // Inicializar con el servidor HTTP
+        this.wsManager.initialize(this.server);
         
         // Configurar broadcast periódico de estado
         setInterval(() => {
@@ -156,10 +159,13 @@ class JuliServer {
             this.validateEnvironment();
             this.setupErrorHandling();
             this.setupMemoryMonitoring();
-            this.setupWebSocket();
-
+            
             await new Promise((resolve) => {
-                this.server.listen(this.PORT, this.HOST, resolve);
+                this.server.listen(this.PORT, this.HOST, () => {
+                    // Configurar WebSocket después de que el servidor esté escuchando
+                    this.setupWebSocket();
+                    resolve();
+                });
             });
 
             this.logServerInfo();
