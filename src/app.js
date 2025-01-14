@@ -24,38 +24,26 @@ const activeConnections = new Set();
 
 // Función para enviar actualizaciones a todos los clientes conectados
 const broadcastConversations = () => {
-    const conversationsMap = conversationService.activeConversations;
-    console.log('📊 Estado del servicio:', {
-        timestamp: new Date().toISOString(),
-        mapSize: conversationsMap.size,
-        conversationsKeys: Array.from(conversationsMap.keys()),
-        wsConnections: activeConnections.size
-    });
+    if (activeConnections.size === 0) return; // No hacer nada si no hay clientes
 
+    const conversationsMap = conversationService.activeConversations;
     const conversations = Array.from(conversationsMap.values())
-        .map(conv => {
-            console.log(`📱 Conversación encontrada:`, {
-                id: conv.whatsappId,
-                messages: conv.messages.length,
-                lastUpdate: conv.lastUpdateTime
-            });
-            return {
-                whatsappId: conv.whatsappId,
-                userPhoneNumber: conv.userPhoneNumber,
-                messages: conv.messages.map(msg => ({
-                    id: msg.id,
-                    timestamp: msg.timestamp,
-                    type: msg.type,
-                    direction: msg.direction,
-                    content: msg.content,
-                    status: msg.status
-                })),
-                startTime: conv.startTime,
-                lastUpdateTime: conv.lastUpdateTime,
-                status: conv.status,
-                metadata: conv.metadata
-            };
-        });
+        .map(conv => ({
+            whatsappId: conv.whatsappId,
+            userPhoneNumber: conv.userPhoneNumber,
+            messages: conv.messages.map(msg => ({
+                id: msg.id,
+                timestamp: msg.timestamp,
+                type: msg.type,
+                direction: msg.direction,
+                content: msg.content,
+                status: msg.status
+            })),
+            startTime: conv.startTime,
+            lastUpdateTime: conv.lastUpdateTime,
+            status: conv.status,
+            metadata: conv.metadata
+        }));
 
     const message = JSON.stringify({
         type: 'conversations',
@@ -72,9 +60,9 @@ const broadcastConversations = () => {
                 client.send(message);
                 successCount++;
             } catch (error) {
-                console.error('❌ Error enviando mensaje a cliente:', {
+                logError('Error enviando mensaje a cliente WebSocket:', {
                     error: error.message,
-                    stack: error.stack
+                    timestamp: new Date().toISOString()
                 });
                 errorCount++;
                 activeConnections.delete(client);
@@ -82,34 +70,43 @@ const broadcastConversations = () => {
         }
     });
 
-    console.log('📊 Resultado del broadcast:', {
-        totalConversations: conversations.length,
-        successfulSends: successCount,
-        errorSends: errorCount,
-        timestamp: new Date().toISOString()
-    });
+    if (successCount > 0 || errorCount > 0) {
+        logInfo('Estado de broadcast:', {
+            totalConversations: conversations.length,
+            successfulSends: successCount,
+            errorSends: errorCount,
+            activeConnections: activeConnections.size,
+            timestamp: new Date().toISOString()
+        });
+    }
 };
 
 // Configuración de conexiones WebSocket
 wss.on('connection', (ws, req) => {
-    console.log('🔌 Nueva conexión WebSocket:', {
+    logInfo('Nueva conexión WebSocket:', {
         ip: req.socket.remoteAddress,
         timestamp: new Date().toISOString()
     });
     
     activeConnections.add(ws);
     
-    // Enviar actualización inicial
+    // Enviar estado inicial
     broadcastConversations();
     
-    // Configurar intervalo de actualización
-    const interval = setInterval(broadcastConversations, 5000);
+    // Configurar manejadores de eventos para la conversación
+    const handleConversationUpdate = () => broadcastConversations();
+    
+    // Suscribirse a eventos
+    conversationService.on('messageReceived', handleConversationUpdate);
+    conversationService.on('conversationCreated', handleConversationUpdate);
+    conversationService.on('conversationClosed', handleConversationUpdate);
+    conversationService.on('conversationUpdated', handleConversationUpdate);
     
     // Manejar mensajes del cliente
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
-            console.log('📥 Mensaje recibido del cliente:', {
+            logInfo('Mensaje recibido del cliente:', {
                 type: data.type,
                 timestamp: new Date().toISOString()
             });
@@ -122,59 +119,36 @@ wss.on('connection', (ws, req) => {
                 }));
             }
         } catch (error) {
-            console.error('❌ Error procesando mensaje del cliente:', {
+            logError('Error procesando mensaje del cliente:', {
                 error: error.message,
-                stack: error.stack
+                timestamp: new Date().toISOString()
             });
         }
     });
     
     // Manejar errores de WebSocket
     ws.on('error', (error) => {
-        console.error('❌ Error en conexión WebSocket:', {
+        logError('Error en conexión WebSocket:', {
             error: error.message,
-            stack: error.stack
+            timestamp: new Date().toISOString()
         });
         activeConnections.delete(ws);
+        cleanup();
     });
+    
+    // Función para limpiar eventos cuando se cierra la conexión
+    const cleanup = () => {
+        conversationService.removeListener('messageReceived', handleConversationUpdate);
+        conversationService.removeListener('conversationCreated', handleConversationUpdate);
+        conversationService.removeListener('conversationClosed', handleConversationUpdate);
+        conversationService.removeListener('conversationUpdated', handleConversationUpdate);
+    };
     
     // Limpiar recursos cuando se cierra la conexión
     ws.on('close', () => {
-        console.log('🔌 Cliente WebSocket desconectado');
+        logInfo('Cliente WebSocket desconectado');
         activeConnections.delete(ws);
-        clearInterval(interval);
-    });
-});
-
-// Suscribirse a eventos de conversación
-conversationService.on('messageReceived', (data) => {
-    console.log('📨 Nuevo mensaje recibido:', {
-        conversationId: data.conversationId,
-        timestamp: new Date().toISOString()
-    });
-    broadcastConversations();
-});
-
-conversationService.on('conversationCreated', (data) => {
-    console.log('🆕 Nueva conversación creada:', {
-        conversationId: data.whatsappId,
-        timestamp: new Date().toISOString()
-    });
-    broadcastConversations();
-});
-
-conversationService.on('conversationClosed', (data) => {
-    console.log('🔒 Conversación cerrada:', {
-        conversationId: data.whatsappId,
-        timestamp: new Date().toISOString()
-    });
-    broadcastConversations();
-});
-
-conversationService.on('error', (error) => {
-    console.error('❌ Error en el servicio de conversaciones:', {
-        error: error.message,
-        stack: error.stack
+        cleanup();
     });
 });
 
@@ -195,7 +169,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Middleware para logging de requests
 app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    logInfo(`${req.method} ${req.url}`);
     next();
 });
 
@@ -205,7 +179,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/monitor', (req, res) => {
-    console.log('Sirviendo monitor de conversaciones');
+    logInfo('Sirviendo monitor de conversaciones');
     res.sendFile(path.join(__dirname, 'public', 'conversations.html'));
 });
 
@@ -253,7 +227,7 @@ app.get('/health', (req, res) => {
 
 // Manejo de errores global
 app.use((err, req, res, next) => {
-    console.error('Error:', err.stack);
+    logError('Error interno:', err);
     res.status(500).json({
         error: 'Error interno del servidor',
         message: process.env.NODE_ENV === 'development' ? err.message : 'Ha ocurrido un error',
@@ -270,5 +244,4 @@ app.use((req, res) => {
     });
 });
 
-// Exportar app y server para uso en server.js
 module.exports = { app, server };
