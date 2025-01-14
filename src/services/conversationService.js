@@ -3,6 +3,28 @@ const { sendMessageToChatbase } = require('../integrations/chatbaseClient');
 const { logInfo, logError } = require('../utils/logger');
 const EventEmitter = require('events');
 
+function validateMessage(message) {
+    const requiredFields = ['id', 'type', 'direction', 'timestamp'];
+    const missingFields = requiredFields.filter(field => !message[field]);
+    
+    if (missingFields.length > 0) {
+        logError('Mensaje inválido - campos faltantes', {
+            missingFields,
+            messageId: message.id
+        });
+        return false;
+    }
+    if (message.type === 'text' && !message.text) {
+        logError('Mensaje de texto sin contenido', { messageId: message.id });
+        return false;
+    }
+    if (message.type === 'audio' && !message.audio) {
+        logError('Mensaje de audio sin contenido', { messageId: message.id });
+        return false;
+    }
+    return true;
+}
+
 class Conversation {
     constructor(whatsappId, userPhoneNumber) {
         this.whatsappId = whatsappId;
@@ -26,25 +48,24 @@ class Conversation {
     }
 
     addMessage(message) {
-        if (!message || !message.content) {
+        if (!validateMessage(message)) {
             logError('Intento de añadir mensaje inválido', { message });
             return false;
         }
 
-        const enhancedMessage = {
-            ...message,
-            id: message.id || Date.now().toString(),
-            timestamp: message.timestamp || new Date(),
-            type: message.type || 'text',
+        const formattedMessage = {
+            id: message.id,
+            timestamp: message.timestamp,
+            type: message.type,
             direction: message.direction,
-            content: message.content,
+            content: message.text || message.audio || '',
             status: message.status || 'received',
             processed: false,
             attempts: 0,
             lastAttempt: null
         };
 
-        this.messages.push(enhancedMessage);
+        this.messages.push(formattedMessage);
         this.lastUpdateTime = new Date();
         this.metadata.messageCount++;
         this.metadata.lastActivity = new Date();
@@ -52,10 +73,10 @@ class Conversation {
 
         logInfo('Mensaje añadido a la conversación', {
             whatsappId: this.whatsappId,
-            messageId: enhancedMessage.id,
-            type: enhancedMessage.type,
-            direction: enhancedMessage.direction,
-            timestamp: enhancedMessage.timestamp
+            messageId: formattedMessage.id,
+            type: formattedMessage.type,
+            direction: formattedMessage.direction,
+            timestamp: formattedMessage.timestamp
         });
 
         return true;
@@ -132,7 +153,6 @@ class ConversationService extends EventEmitter {
     async handleMessageReceived({ conversationId, message }) {
         const conversation = this.getConversation(conversationId);
         if (conversation) {
-            // Notificar a los clientes sobre el nuevo mensaje
             this.emit('broadcast', {
                 type: 'newMessage',
                 data: {
@@ -159,10 +179,7 @@ class ConversationService extends EventEmitter {
     }
 
     startMaintenanceInterval() {
-        // Limpieza de conversaciones inactivas
         setInterval(() => this.cleanupInactiveConversations(), 5 * 60 * 1000);
-        
-        // Monitoreo de heartbeats
         setInterval(() => this.checkHeartbeats(), this.heartbeatInterval);
     }
 
@@ -222,6 +239,10 @@ class ConversationService extends EventEmitter {
 
     async processIncomingMessage(message) {
         try {
+            if (!validateMessage(message)) {
+                throw new Error('Mensaje inválido');
+            }
+
             console.log('🔄 Procesando mensaje entrante:', {
                 from: message.from,
                 type: message.type,
@@ -243,14 +264,18 @@ class ConversationService extends EventEmitter {
                 });
             }
 
-            const success = conversation.addMessage({
+            const formattedMessage = {
                 id: message.id,
                 type: this.determineMessageType(message),
                 direction: 'inbound',
                 content: message.text?.body || message.audio?.id,
                 status: 'received',
-                timestamp: new Date()
-            });
+                timestamp: new Date(),
+                text: message.text?.body,
+                audio: message.audio?.id
+            };
+
+            const success = conversation.addMessage(formattedMessage);
 
             if (success) {
                 if (message.profile) {
@@ -292,7 +317,6 @@ class ConversationService extends EventEmitter {
             }
         }
 
-        // Emitir estado actual de conversaciones
         this.emit('broadcast', {
             type: 'conversationsStatus',
             data: {

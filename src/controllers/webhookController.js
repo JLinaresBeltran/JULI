@@ -57,10 +57,33 @@ const MessageProcessor = {
                 from: messageData.from
             });
 
-            const conversation = await conversationService.processIncomingMessage(messageData);
+            // Formatear el mensaje antes de procesarlo
+            const formattedMessage = {
+                id: messageData.id,
+                from: messageData.from,
+                timestamp: new Date(parseInt(messageData.timestamp) * 1000).toISOString(),
+                type: messageData.type,
+                text: messageData.text?.body,
+                audio: messageData.audio?.id,
+                direction: 'inbound',
+                status: 'received',
+                profile: messageData.profile,
+                metadata: messageData.metadata
+            };
 
-            if (messageData.type === 'text') {
-                await whatsappService.sendReadReceipt(messageData.id);
+            const conversation = await conversationService.processIncomingMessage(formattedMessage);
+
+            try {
+                if (messageData.type === 'text') {
+                    await whatsappService.markAsRead(messageData.id);
+                    logInfo('Message marked as read', { messageId: messageData.id });
+                }
+            } catch (readReceiptError) {
+                logError('Error marking message as read', {
+                    messageId: messageData.id,
+                    error: readReceiptError.message
+                });
+                // Continuar el proceso aunque falle el read receipt
             }
 
             // Notificar a través de WebSocket
@@ -79,7 +102,8 @@ const MessageProcessor = {
             logError('Message Processing Failed', {
                 error: error.message,
                 messageId: messageData.id,
-                type: messageData.type
+                type: messageData.type,
+                stack: error.stack
             });
             throw error;
         }
@@ -112,13 +136,23 @@ const MessageProcessor = {
                     error: error.message,
                     timestamp: new Date()
                 });
+
+                logError('Error processing message', {
+                    messageId: message.id,
+                    type: message.type,
+                    error: error.message,
+                    stack: error.stack
+                });
             }
         }
 
         // Notificar resultados del procesamiento por lotes
         wsManager.broadcast({
             type: 'messagesBatchProcessed',
-            data: results
+            data: {
+                ...results,
+                timestamp: new Date().toISOString()
+            }
         });
 
         return results;
