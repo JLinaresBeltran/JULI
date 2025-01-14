@@ -38,8 +38,8 @@ const MessageProcessor = {
             from: message.from,
             timestamp: message.timestamp,
             type: message.type,
-            text: message.text?.body,
-            audio: message.audio?.id,
+            text: message.type === 'text' ? { body: message.text?.body } : null,  // <- Corrección aquí
+            audio: message.type === 'audio' ? { id: message.audio?.id } : null,   // <- Mantener consistencia
             profile: changeContext.value.contacts?.[0],
             status: message.status || 'received',
             metadata: {
