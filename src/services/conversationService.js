@@ -19,18 +19,18 @@ class Conversation {
             audioTranscriptions: [],
             lastActivity: new Date(),
             messageCount: 0,
-            hasUnreadMessages: false
+            hasUnreadMessages: false,
+            reconnectAttempts: 0,
+            lastHeartbeat: new Date()
         };
     }
 
     addMessage(message) {
-        // Validar mensaje
         if (!message || !message.content) {
             logError('Intento de añadir mensaje inválido', { message });
             return false;
         }
 
-        // Añadir campos adicionales al mensaje
         const enhancedMessage = {
             ...message,
             id: message.id || Date.now().toString(),
@@ -39,7 +39,9 @@ class Conversation {
             direction: message.direction,
             content: message.content,
             status: message.status || 'received',
-            processed: false
+            processed: false,
+            attempts: 0,
+            lastAttempt: null
         };
 
         this.messages.push(enhancedMessage);
@@ -52,27 +54,41 @@ class Conversation {
             whatsappId: this.whatsappId,
             messageId: enhancedMessage.id,
             type: enhancedMessage.type,
-            direction: enhancedMessage.direction
+            direction: enhancedMessage.direction,
+            timestamp: enhancedMessage.timestamp
         });
 
         return true;
     }
 
     getLastMessage() {
-        return this.messages[this.messages.length - 1];
+        return this.messages[this.messages.length - 1] || null;
     }
 
     updateMetadata(data) {
         this.metadata = { ...this.metadata, ...data };
+        this.lastUpdateTime = new Date();
+        
         logInfo('Metadata actualizada', {
             whatsappId: this.whatsappId,
-            updates: Object.keys(data)
+            updates: Object.keys(data),
+            timestamp: this.lastUpdateTime
         });
     }
 
     markAsRead() {
         this.metadata.hasUnreadMessages = false;
-        logInfo('Conversación marcada como leída', { whatsappId: this.whatsappId });
+        this.lastUpdateTime = new Date();
+        
+        logInfo('Conversación marcada como leída', { 
+            whatsappId: this.whatsappId,
+            timestamp: this.lastUpdateTime
+        });
+    }
+
+    updateHeartbeat() {
+        this.metadata.lastHeartbeat = new Date();
+        this.metadata.reconnectAttempts = 0;
     }
 
     toJSON() {
@@ -95,13 +111,81 @@ class ConversationService extends EventEmitter {
         super();
         this.activeConversations = new Map();
         this.conversationTimeout = 30 * 60 * 1000; // 30 minutos
+        this.heartbeatInterval = 45000; // 45 segundos
+        this.maxReconnectAttempts = 5;
         
-        // Iniciar el sistema de limpieza automática
-        this.startCleanupInterval();
+        this.setupEventHandlers();
+        this.startMaintenanceInterval();
         
         logInfo('Servicio de conversaciones iniciado', {
-            timeoutMinutes: this.conversationTimeout / 60000
+            timeoutMinutes: this.conversationTimeout / 60000,
+            heartbeatSeconds: this.heartbeatInterval / 1000
         });
+    }
+
+    setupEventHandlers() {
+        this.on('messageReceived', this.handleMessageReceived.bind(this));
+        this.on('conversationUpdated', this.handleConversationUpdated.bind(this));
+        this.on('conversationClosed', this.handleConversationClosed.bind(this));
+    }
+
+    async handleMessageReceived({ conversationId, message }) {
+        const conversation = this.getConversation(conversationId);
+        if (conversation) {
+            // Notificar a los clientes sobre el nuevo mensaje
+            this.emit('broadcast', {
+                type: 'newMessage',
+                data: {
+                    conversationId,
+                    message,
+                    conversation: conversation.toJSON()
+                }
+            });
+        }
+    }
+
+    handleConversationUpdated(conversation) {
+        this.emit('broadcast', {
+            type: 'conversationUpdate',
+            data: conversation.toJSON()
+        });
+    }
+
+    handleConversationClosed(data) {
+        this.emit('broadcast', {
+            type: 'conversationClosed',
+            data
+        });
+    }
+
+    startMaintenanceInterval() {
+        // Limpieza de conversaciones inactivas
+        setInterval(() => this.cleanupInactiveConversations(), 5 * 60 * 1000);
+        
+        // Monitoreo de heartbeats
+        setInterval(() => this.checkHeartbeats(), this.heartbeatInterval);
+    }
+
+    checkHeartbeats() {
+        const now = Date.now();
+        for (const conversation of this.activeConversations.values()) {
+            const timeSinceLastHeartbeat = now - conversation.metadata.lastHeartbeat;
+            if (timeSinceLastHeartbeat > this.heartbeatInterval) {
+                this.handleMissedHeartbeat(conversation);
+            }
+        }
+    }
+
+    handleMissedHeartbeat(conversation) {
+        conversation.metadata.reconnectAttempts++;
+        if (conversation.metadata.reconnectAttempts > this.maxReconnectAttempts) {
+            this.closeConversation(conversation.whatsappId);
+        } else {
+            this.emit('reconnectNeeded', {
+                conversationId: conversation.whatsappId,
+                attempts: conversation.metadata.reconnectAttempts
+            });
+        }
     }
 
     createConversation(whatsappId, userPhoneNumber) {
@@ -119,8 +203,11 @@ class ConversationService extends EventEmitter {
             timestamp: conversation.startTime 
         });
 
-        // Emitir evento de creación de conversación
         this.emit('conversationCreated', conversation.toJSON());
+        this.emit('broadcast', {
+            type: 'newConversation',
+            data: conversation.toJSON()
+        });
         
         return conversation;
     }
@@ -160,7 +247,7 @@ class ConversationService extends EventEmitter {
                 id: message.id,
                 type: this.determineMessageType(message),
                 direction: 'inbound',
-                content: message.text || message.audio,
+                content: message.text?.body || message.audio?.id,
                 status: 'received',
                 timestamp: new Date()
             });
@@ -173,13 +260,12 @@ class ConversationService extends EventEmitter {
                     });
                 }
 
-                // Emitir evento de mensaje recibido
                 this.emit('messageReceived', {
                     conversationId: whatsappId,
                     message: conversation.getLastMessage()
                 });
 
-                await this.checkConversationTimeout(whatsappId);
+                this.emit('conversationUpdated', conversation);
             }
 
             return conversation;
@@ -197,12 +283,6 @@ class ConversationService extends EventEmitter {
         return 'text';
     }
 
-    startCleanupInterval() {
-        setInterval(() => {
-            this.cleanupInactiveConversations();
-        }, 5 * 60 * 1000); // Revisar cada 5 minutos
-    }
-
     async cleanupInactiveConversations() {
         const now = Date.now();
         for (const [whatsappId, conversation] of this.activeConversations) {
@@ -211,6 +291,15 @@ class ConversationService extends EventEmitter {
                 await this.closeConversation(whatsappId);
             }
         }
+
+        // Emitir estado actual de conversaciones
+        this.emit('broadcast', {
+            type: 'conversationsStatus',
+            data: {
+                activeCount: this.activeConversations.size,
+                conversations: Array.from(this.activeConversations.values()).map(c => c.toJSON())
+            }
+        });
     }
 
     async closeConversation(whatsappId) {
@@ -223,10 +312,10 @@ class ConversationService extends EventEmitter {
         logInfo('Conversación cerrada', {
             whatsappId,
             duration: Date.now() - conversation.startTime,
-            messageCount: conversation.messages.length
+            messageCount: conversation.messages.length,
+            timestamp: new Date()
         });
 
-        // Emitir evento de cierre de conversación
         this.emit('conversationClosed', {
             whatsappId,
             summary: conversation.toJSON()
@@ -252,19 +341,27 @@ class ConversationService extends EventEmitter {
             timestamp: new Date()
         });
 
-        // Emitir evento de actualización de analytics
         this.emit('analyticsGenerated', analytics);
+        this.emit('broadcast', {
+            type: 'analytics',
+            data: analytics
+        });
 
         return analytics;
     }
 
-    async checkConversationTimeout(whatsappId) {
-        const conversation = this.getConversation(whatsappId);
-        if (!conversation) return;
+    getAllConversations() {
+        return Array.from(this.activeConversations.values()).map(conv => conv.toJSON());
+    }
 
-        const timeSinceLastUpdate = Date.now() - conversation.lastUpdateTime;
-        if (timeSinceLastUpdate > this.conversationTimeout) {
-            await this.closeConversation(whatsappId);
+    updateConversationHeartbeat(whatsappId) {
+        const conversation = this.getConversation(whatsappId);
+        if (conversation) {
+            conversation.updateHeartbeat();
+            this.emit('heartbeat', {
+                conversationId: whatsappId,
+                timestamp: conversation.metadata.lastHeartbeat
+            });
         }
     }
 }

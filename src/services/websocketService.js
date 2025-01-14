@@ -1,119 +1,92 @@
 // src/services/websocketService.js
-const WebSocket = require('ws');
-const { logInfo, logError } = require('../utils/logger');
 
 class WebSocketManager {
-  constructor(server) {
-    this.wss = new WebSocket.Server({ server });
-    this.connections = new Map();
-    this.heartbeatInterval = 30000; // 30 segundos
-    this.setupWebSocket();
-  }
-
-  setupWebSocket() {
-    this.wss.on('connection', (ws, req) => {
-      const clientId = this.generateClientId(req);
-      this.connections.set(clientId, {
-        ws,
-        isAlive: true,
-        connectedAt: Date.now(),
-        lastHeartbeat: Date.now()
-      });
-
-      logInfo('Nueva conexión WebSocket', {
-        clientId,
-        ip: req.socket.remoteAddress
-      });
-
-      // Configurar ping/pong
-      ws.on('pong', () => {
-        const connection = this.connections.get(clientId);
-        if (connection) {
-          connection.isAlive = true;
-          connection.lastHeartbeat = Date.now();
-        }
-      });
-
-      // Manejar mensajes del cliente
-      ws.on('message', (data) => {
-        try {
-          const message = JSON.parse(data);
-          if (message.type === 'heartbeat') {
-            ws.send(JSON.stringify({ type: 'heartbeat-ack' }));
-          }
-        } catch (error) {
-          logError('Error procesando mensaje WebSocket', { error });
-        }
-      });
-
-      // Manejar desconexión
-      ws.on('close', () => {
-        this.connections.delete(clientId);
-        logInfo('Cliente WebSocket desconectado', { clientId });
-      });
-
-      // Iniciar heartbeat para este cliente
-      this.startHeartbeat(clientId);
-    });
-
-    // Limpieza periódica de conexiones inactivas
-    setInterval(() => this.cleanupInactiveConnections(), this.heartbeatInterval);
-  }
-
-  startHeartbeat(clientId) {
-    const interval = setInterval(() => {
-      const connection = this.connections.get(clientId);
-      if (!connection) {
-        clearInterval(interval);
-        return;
-      }
-
-      if (!connection.isAlive) {
-        this.connections.delete(clientId);
-        connection.ws.terminate();
-        clearInterval(interval);
-        return;
-      }
-
-      connection.isAlive = false;
-      connection.ws.ping();
-    }, this.heartbeatInterval);
-  }
-
-  cleanupInactiveConnections() {
-    const now = Date.now();
-    for (const [clientId, connection] of this.connections.entries()) {
-      if (!connection.isAlive || now - connection.lastHeartbeat > this.heartbeatInterval * 2) {
-        connection.ws.terminate();
-        this.connections.delete(clientId);
-        logInfo('Conexión inactiva eliminada', { clientId });
-      }
+    constructor(server) {
+        this.wss = new WebSocket.Server({ server });
+        this.connections = new Map();
+        this.heartbeatInterval = 45000; // 45 segundos
+        this.setupWebSocket();
+        
+        // Suscribirse a eventos de conversación
+        this.setupConversationEvents();
     }
-  }
 
-  generateClientId(req) {
-    return `${req.socket.remoteAddress}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  }
+    setupConversationEvents() {
+        const conversationService = require('./conversationService');
+        
+        // Escuchar eventos de actualización de conversaciones
+        conversationService.on('conversationUpdated', (conversation) => {
+            this.broadcastConversationUpdate(conversation);
+        });
 
-  broadcast(data) {
-    this.connections.forEach(({ ws }) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(data));
-      }
-    });
-  }
+        conversationService.on('newMessage', (conversationId) => {
+            this.broadcastConversations();
+        });
+    }
 
-  getStats() {
-    return {
-      activeConnections: this.connections.size,
-      connectionsList: Array.from(this.connections.entries()).map(([clientId, conn]) => ({
-        clientId,
-        connectedAt: conn.connectedAt,
-        lastHeartbeat: conn.lastHeartbeat,
-        isAlive: conn.isAlive
-      }))
-    };
-  }
+    broadcastConversationUpdate(conversation) {
+        const message = {
+            type: 'conversationUpdate',
+            data: this.formatConversation(conversation)
+        };
+
+        this.broadcast(message);
+    }
+
+    broadcastConversations() {
+        const conversationService = require('./conversationService');
+        const conversations = Array.from(conversationService.activeConversations.values())
+            .map(this.formatConversation);
+
+        const message = {
+            type: 'conversations',
+            data: conversations,
+            timestamp: new Date().toISOString()
+        };
+
+        this.broadcast(message);
+    }
+
+    formatConversation(conversation) {
+        return {
+            whatsappId: conversation.whatsappId,
+            userPhoneNumber: conversation.userPhoneNumber,
+            messages: conversation.messages.map(msg => ({
+                id: msg.id,
+                timestamp: msg.timestamp,
+                type: msg.type,
+                direction: msg.direction,
+                content: msg.content,
+                status: msg.status
+            })),
+            startTime: conversation.startTime,
+            lastUpdateTime: conversation.lastUpdateTime,
+            status: conversation.status,
+            metadata: conversation.metadata
+        };
+    }
+
+    broadcast(data) {
+        let successCount = 0;
+        let errorCount = 0;
+
+        this.connections.forEach((connection) => {
+            try {
+                if (connection.ws.readyState === WebSocket.OPEN) {
+                    connection.ws.send(JSON.stringify(data));
+                    successCount++;
+                }
+            } catch (error) {
+                errorCount++;
+                console.error('Error en broadcast:', error);
+            }
+        });
+
+        // Log del resultado del broadcast
+        console.log('Broadcast completado:', {
+            successCount,
+            errorCount,
+            totalConnections: this.connections.size
+        });
+    }
 }
-
-module.exports = WebSocketManager;
