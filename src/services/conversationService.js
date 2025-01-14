@@ -135,17 +135,25 @@ class ConversationService extends EventEmitter {
 
     async processIncomingMessage(message) {
         try {
-            logInfo('Procesando mensaje entrante', {
+            console.log('🔄 Procesando mensaje entrante:', {
                 from: message.from,
                 type: message.type,
-                timestamp: new Date()
+                hasText: !!message.text,
+                hasAudio: !!message.audio,
+                timestamp: new Date().toISOString()
             });
 
             const whatsappId = message.from;
             let conversation = this.getConversation(whatsappId);
 
             if (!conversation) {
+                console.log('🆕 Creando nueva conversación para:', whatsappId);
                 conversation = this.createConversation(whatsappId, message.from);
+            } else {
+                console.log('📱 Usando conversación existente:', {
+                    id: whatsappId,
+                    messageCount: conversation.messages.length
+                });
             }
 
             const success = conversation.addMessage({
@@ -250,7 +258,6 @@ class ConversationService extends EventEmitter {
         return analytics;
     }
 
-    // Método para verificar el timeout de la conversación (añadido para completar el método mencionado)
     async checkConversationTimeout(whatsappId) {
         const conversation = this.getConversation(whatsappId);
         if (!conversation) return;

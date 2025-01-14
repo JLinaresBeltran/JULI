@@ -32,9 +32,20 @@ exports.receiveMessage = async (req, res) => {
     
     try {
         const body = req.body;
-        console.log('📩 Webhook Received', {
+        console.log('🔍 Headers recibidos:', req.headers);
+        console.log('📩 Webhook payload completo:', JSON.stringify(body, null, 2));
+        
+        // Verificación básica del payload
+        if (!body || !body.object) {
+            console.log('⚠️ Payload inválido recibido');
+            return res.status(200).send('EVENT_RECEIVED');
+        }
+
+        console.log('📨 Mensaje webhook recibido:', {
             timestamp: new Date().toISOString(),
-            objectType: body.object,
+            object: body.object,
+            hasEntry: Array.isArray(body.entry),
+            entryCount: body.entry?.length,
             hasMessages: body.entry?.[0]?.changes?.[0]?.value?.messages?.length > 0
         });
         
@@ -43,7 +54,20 @@ exports.receiveMessage = async (req, res) => {
             let errorMessageCount = 0;
 
             for (const entry of body.entry) {
+                console.log('📝 Procesando entry:', {
+                    id: entry.id,
+                    hasChanges: Array.isArray(entry.changes),
+                    changeCount: entry.changes?.length
+                });
+
                 for (const change of entry.changes) {
+                    console.log('🔄 Procesando change:', {
+                        field: change.field,
+                        hasMessages: Array.isArray(change.value?.messages),
+                        messageCount: change.value?.messages?.length,
+                        valueType: typeof change.value
+                    });
+
                     if (change.value.messages) {
                         const messages = change.value.messages;
                         
@@ -64,11 +88,18 @@ exports.receiveMessage = async (req, res) => {
                                 status: message.status || 'received'
                             };
 
+                            console.log('🔍 Mensaje a procesar:', {
+                                messageId: messageData.id,
+                                from: messageData.from,
+                                type: messageData.type,
+                                hasText: !!messageData.text,
+                                hasAudio: !!messageData.audio,
+                                hasProfile: !!messageData.profile
+                            });
+
                             try {
-                                // Procesar el mensaje
                                 const conversation = await conversationService.processIncomingMessage(messageData);
                                 
-                                // Si es un mensaje de texto, enviar confirmación de recepción
                                 if (messageData.type === 'text') {
                                     await whatsappService.sendReadReceipt(messageData.from, messageData.id);
                                 }
@@ -77,7 +108,8 @@ exports.receiveMessage = async (req, res) => {
                                     messageId: messageData.id,
                                     conversationId: conversation.whatsappId,
                                     messageType: messageData.type,
-                                    messageCount: conversation.messages.length
+                                    messageCount: conversation.messages.length,
+                                    conversationStatus: conversation.status
                                 });
 
                                 processedMessageCount++;
@@ -102,29 +134,23 @@ exports.receiveMessage = async (req, res) => {
                 }
             }
             
-            // Log overall processing summary
             const processingTime = Date.now() - startTime;
-            logInfo('🏁 Webhook Processing Summary', {
+            console.log('🏁 Webhook Processing Summary', {
                 totalMessages: processedMessageCount + errorMessageCount,
                 processedMessages: processedMessageCount,
                 failedMessages: errorMessageCount,
-                processingTimeMs: processingTime
+                processingTimeMs: processingTime,
+                activeConversations: conversationService.activeConversations.size
             });
 
-            // Meta requiere una respuesta 200 OK para los webhooks
             res.status(200).send('EVENT_RECEIVED');
         } else {
             console.log('⚠️ Unrecognized Webhook Object', {
                 object: body.object,
-                expectedObject: 'whatsapp_business_account'
+                expectedObject: 'whatsapp_business_account',
+                timestamp: new Date().toISOString()
             });
 
-            logError('Unrecognized Webhook Object', { 
-                object: body.object,
-                expectedObject: 'whatsapp_business_account'
-            });
-
-            // Aún así devolvemos 200 para webhooks de Meta
             res.status(200).json({ 
                 received: true,
                 error: 'Invalid Object' 
@@ -136,16 +162,10 @@ exports.receiveMessage = async (req, res) => {
         console.error('🔥 Webhook Processing General Error', {
             error: error.message,
             processingTimeMs: processingTime,
-            stack: error.stack
+            stack: error.stack,
+            timestamp: new Date().toISOString()
         });
 
-        logError('General Webhook Error', {
-            error: error.message,
-            processingTimeMs: processingTime,
-            stack: error.stack
-        });
-
-        // Siempre devolver 200 para webhook de Meta
         res.status(200).send('EVENT_RECEIVED');
     }
 };
@@ -174,7 +194,8 @@ exports.getConversations = async (req, res) => {
 
         logInfo('📊 Sending Conversations List', {
             count: formattedConversations.length,
-            activeConversations: formattedConversations.length
+            activeConversations: formattedConversations.length,
+            timestamp: new Date().toISOString()
         });
 
         res.status(200).json(formattedConversations);
@@ -197,14 +218,16 @@ exports.getConversationAnalytics = async (req, res) => {
         
         logInfo('📊 Analytics Generated Successfully', {
             activeConversations: analytics.activeConversations,
-            totalMessages: analytics.conversations.reduce((acc, conv) => acc + conv.messageCount, 0)
+            totalMessages: analytics.conversations.reduce((acc, conv) => acc + conv.messageCount, 0),
+            timestamp: new Date().toISOString()
         });
         
         res.status(200).json(analytics);
     } catch (error) {
         logError('❌ Error Generating Analytics', {
             error: error.message,
-            stack: error.stack
+            stack: error.stack,
+            timestamp: new Date().toISOString()
         });
         res.status(500).json({ 
             error: 'Internal Server Error',
