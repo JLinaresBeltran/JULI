@@ -6,30 +6,40 @@ const EventEmitter = require('events');
 function validateWhatsAppMessage(message) {
     try {
         // Validación básica
-        if (!message || !message.from || !message.id) {
-            logError('Mensaje de WhatsApp inválido - campos básicos faltantes', {
-                hasMessage: !!message,
-                hasFrom: message?.from,
-                hasId: message?.id,
-                messageContent: message
-            });
+        if (!message || typeof message !== 'object') {
+            logError('Mensaje inválido - no es un objeto');
             return false;
         }
 
-        // Validación del tipo de mensaje
-        if (!message.type) {
-            logError('Tipo de mensaje faltante', { messageId: message.id });
+        // Imprimir estructura completa del mensaje para debugging
+        logInfo('Estructura del mensaje recibido', {
+            messageId: message.id,
+            type: message.type,
+            hasText: !!message.text,
+            textBody: message.text?.body
+        });
+
+        // Validación de campos requeridos
+        if (!message.from || !message.id || !message.type) {
+            logError('Campos requeridos faltantes', {
+                hasFrom: !!message.from,
+                hasId: !!message.id,
+                hasType: !!message.type,
+                messageId: message.id || 'unknown'
+            });
             return false;
         }
 
         // Validación por tipo
         switch (message.type) {
             case 'text':
-                if (!message.text?.body) {
-                    logError('Estructura de mensaje de texto inválida', {
+                // Validar que text y body existan y body no esté vacío
+                if (!message.text || !message.text.body || message.text.body.trim() === '') {
+                    logError('Mensaje de texto inválido', {
                         messageId: message.id,
                         hasText: !!message.text,
-                        hasBody: !!message.text?.body
+                        hasBody: !!message.text?.body,
+                        bodyLength: message.text?.body?.length || 0
                     });
                     return false;
                 }
@@ -37,9 +47,10 @@ function validateWhatsAppMessage(message) {
 
             case 'audio':
                 if (!message.audio?.id) {
-                    logError('Estructura de mensaje de audio inválida', { 
+                    logError('Mensaje de audio inválido', {
                         messageId: message.id,
-                        hasAudio: !!message.audio 
+                        hasAudio: !!message.audio,
+                        hasAudioId: !!message.audio?.id
                     });
                     return false;
                 }
@@ -47,9 +58,10 @@ function validateWhatsAppMessage(message) {
 
             case 'document':
                 if (!message.document?.id) {
-                    logError('Estructura de mensaje de documento inválida', { 
+                    logError('Mensaje de documento inválido', {
                         messageId: message.id,
-                        hasDocument: !!message.document 
+                        hasDocument: !!message.document,
+                        hasDocumentId: !!message.document?.id
                     });
                     return false;
                 }
@@ -63,8 +75,8 @@ function validateWhatsAppMessage(message) {
                 return false;
         }
 
-        // Log de éxito usando logInfo en lugar de logDebug
-        logInfo('Mensaje validado exitosamente', {
+        // Mensaje válido
+        logInfo('Mensaje validado correctamente', {
             messageId: message.id,
             type: message.type,
             from: message.from
@@ -73,10 +85,9 @@ function validateWhatsAppMessage(message) {
         return true;
 
     } catch (error) {
-        logError('Error durante la validación del mensaje', {
-            error: error.message,
+        logError('Error durante validación', {
             messageId: message?.id,
-            messageType: message?.type,
+            error: error.message,
             stack: error.stack
         });
         return false;
