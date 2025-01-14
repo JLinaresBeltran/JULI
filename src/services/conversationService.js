@@ -4,45 +4,88 @@ const { logInfo, logError, logDebug } = require('../utils/logger');
 const EventEmitter = require('events');
 
 function validateWhatsAppMessage(message) {
-    // Validación específica para mensajes de WhatsApp
-    if (!message || !message.from || !message.id) {
-        logError('Mensaje de WhatsApp inválido - campos básicos faltantes', {
+    try {
+        // Log inicial para debug
+        logDebug('Validando mensaje WhatsApp', {
             hasMessage: !!message,
-            hasFrom: message?.from,
-            hasId: message?.id
+            type: message?.type,
+            messageStructure: {
+                hasFrom: !!message?.from,
+                hasId: !!message?.id,
+                hasText: !!message?.text,
+                hasBody: !!message?.text?.body
+            }
+        });
+
+        // Validación básica
+        if (!message || !message.from || !message.id || !message.type) {
+            logError('Mensaje de WhatsApp inválido - campos básicos faltantes', {
+                hasMessage: !!message,
+                hasFrom: !!message?.from,
+                hasId: !!message?.id,
+                hasType: !!message?.type
+            });
+            return false;
+        }
+
+        // Validación por tipo
+        switch (message.type) {
+            case 'text':
+                // Validación específica para texto
+                const isValidText = message.text && typeof message.text.body === 'string';
+                if (!isValidText) {
+                    logError('Mensaje de texto de WhatsApp inválido', {
+                        messageId: message.id,
+                        hasText: !!message.text,
+                        bodyType: typeof message.text?.body
+                    });
+                    return false;
+                }
+                break;
+
+            case 'audio':
+                if (!message.audio?.id) {
+                    logError('Mensaje de audio de WhatsApp inválido', { 
+                        messageId: message.id,
+                        hasAudio: !!message.audio 
+                    });
+                    return false;
+                }
+                break;
+
+            case 'document':
+                if (!message.document?.id) {
+                    logError('Mensaje de documento de WhatsApp inválido', { 
+                        messageId: message.id,
+                        hasDocument: !!message.document 
+                    });
+                    return false;
+                }
+                break;
+
+            default:
+                logError('Tipo de mensaje de WhatsApp no soportado', {
+                    messageId: message.id,
+                    type: message.type
+                });
+                return false;
+        }
+
+        // Log de éxito
+        logDebug('Mensaje validado correctamente', {
+            messageId: message.id,
+            type: message.type
+        });
+
+        return true;
+    } catch (error) {
+        logError('Error en validación de mensaje', {
+            error: error.message,
+            messageId: message?.id,
+            messageType: message?.type
         });
         return false;
     }
-
-    // Validación por tipo de mensaje
-    switch (message.type) {
-        case 'text':
-            if (!message.text?.body) {
-                logError('Mensaje de texto de WhatsApp inválido', { messageId: message.id });
-                return false;
-            }
-            break;
-        case 'audio':
-            if (!message.audio?.id) {
-                logError('Mensaje de audio de WhatsApp inválido', { messageId: message.id });
-                return false;
-            }
-            break;
-        case 'document':
-            if (!message.document?.id) {
-                logError('Mensaje de documento de WhatsApp inválido', { messageId: message.id });
-                return false;
-            }
-            break;
-        default:
-            logError('Tipo de mensaje de WhatsApp no soportado', {
-                messageId: message.id,
-                type: message.type
-            });
-            return false;
-    }
-
-    return true;
 }
 
 class Conversation {
