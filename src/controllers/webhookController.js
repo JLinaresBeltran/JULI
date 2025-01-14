@@ -38,8 +38,14 @@ const MessageProcessor = {
             from: message.from,
             timestamp: message.timestamp,
             type: message.type,
-            text: message.type === 'text' ? { body: message.text?.body } : null,  // <- Corrección aquí
-            audio: message.type === 'audio' ? { id: message.audio?.id } : null,   // <- Mantener consistencia
+            // Mantener la estructura original del mensaje de texto
+            text: message.type === 'text' ? { 
+                body: message.text.body 
+            } : undefined,
+            // Mantener la estructura original del mensaje de audio
+            audio: message.type === 'audio' ? {
+                id: message.audio.id
+            } : undefined,
             profile: changeContext.value.contacts?.[0],
             status: message.status || 'received',
             metadata: {
@@ -71,7 +77,7 @@ const MessageProcessor = {
                 metadata: messageData.metadata
             };
 
-            const conversation = await conversationService.processIncomingMessage(formattedMessage);
+            const conversation = await conversationService.processIncomingMessage(messageData);
 
             try {
                 if (messageData.type === 'text') {
