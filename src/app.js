@@ -24,39 +24,57 @@ const activeConnections = new Set();
 
 // Función para enviar actualizaciones a todos los clientes conectados
 const broadcastConversations = () => {
+    console.log('🔄 Iniciando broadcast...', {
+        timestamp: new Date().toISOString(),
+        activeConnections: activeConnections.size
+    });
     const conversations = Array.from(conversationService.activeConversations.values())
-        .map(conv => ({
-            whatsappId: conv.whatsappId,
-            userPhoneNumber: conv.userPhoneNumber,
-            messages: conv.messages.map(msg => ({
-                id: msg.id,
-                timestamp: msg.timestamp,
-                type: msg.type,
-                direction: msg.direction,
-                content: msg.content,
-                status: msg.status
-            })),
-            startTime: conv.startTime,
-            lastUpdateTime: conv.lastUpdateTime,
-            status: conv.status,
-            metadata: conv.metadata
-        }));
-
+        .map(conv => {
+            console.log(`📝 Preparando conversación: ${conv.whatsappId}`, {
+                messageCount: conv.messages.length,
+                lastUpdate: conv.lastUpdateTime
+            });
+            return {
+                whatsappId: conv.whatsappId,
+                userPhoneNumber: conv.userPhoneNumber,
+                messages: conv.messages.map(msg => ({
+                    id: msg.id,
+                    timestamp: msg.timestamp,
+                    type: msg.type,
+                    direction: msg.direction,
+                    content: msg.content,
+                    status: msg.status
+                })),
+                startTime: conv.startTime,
+                lastUpdateTime: conv.lastUpdateTime,
+                status: conv.status,
+                metadata: conv.metadata
+            };
+        });
     const message = JSON.stringify({
         type: 'conversations',
         data: conversations,
         timestamp: new Date().toISOString()
     });
-
+    let successCount = 0;
+    let errorCount = 0;
     activeConnections.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
             try {
                 client.send(message);
+                successCount++;
             } catch (error) {
-                logError('Error enviando mensaje a cliente WebSocket:', error);
+                console.error('❌ Error enviando mensaje a cliente:', error);
+                errorCount++;
                 activeConnections.delete(client);
             }
         }
+    });
+    console.log('📊 Resultado del broadcast:', {
+        totalConversations: conversations.length,
+        successfulSends: successCount,
+        errorSends: errorCount,
+        timestamp: new Date().toISOString()
     });
 };
 
@@ -135,6 +153,22 @@ app.get('/', (req, res) => {
 app.get('/monitor', (req, res) => {
     console.log('Sirviendo monitor de conversaciones');
     res.sendFile(path.join(__dirname, 'public', 'conversations.html'));
+});
+
+// Nueva ruta de depuración para estado de WebSocket
+app.get('/api/debug/ws-status', (req, res) => {
+    const status = {
+        activeConnections: activeConnections.size,
+        activeConversations: conversationService.activeConversations.size,
+        wsServerStatus: wss.readyState,
+        lastBroadcast: new Date().toISOString(),
+        connections: Array.from(activeConnections).map(client => ({
+            readyState: client.readyState,
+            protocol: client.protocol,
+            timestamp: new Date().toISOString()
+        }))
+    };
+    res.json(status);
 });
 
 // Rutas de la API

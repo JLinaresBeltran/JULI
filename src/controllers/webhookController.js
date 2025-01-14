@@ -9,17 +9,17 @@ exports.verifyWebhook = (req, res) => {
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
 
-    logInfo('Verificación de webhook recibida', { 
+    logInfo('📡 Webhook Verification Request', { 
         mode, 
         tokenMatch: token === VERIFY_TOKEN,
         hasChallenge: !!challenge
     });
 
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-        logInfo('Webhook verificado exitosamente');
+        logInfo('✅ Webhook Verified Successfully');
         res.status(200).send(challenge);
     } else {
-        logError('Fallo en verificación de webhook', { 
+        logError('❌ Webhook Verification Failed', { 
             mode, 
             tokenMatch: token === VERIFY_TOKEN 
         });
@@ -28,18 +28,28 @@ exports.verifyWebhook = (req, res) => {
 };
 
 exports.receiveMessage = async (req, res) => {
+    const startTime = Date.now();
+    
     try {
         const body = req.body;
-        console.log('Mensaje de WhatsApp recibido:', JSON.stringify(body, null, 2));
+        console.log('📩 Webhook Received', {
+            timestamp: new Date().toISOString(),
+            objectType: body.object,
+            hasMessages: body.entry?.[0]?.changes?.[0]?.value?.messages?.length > 0
+        });
         
         if (body.object === 'whatsapp_business_account') {
+            let processedMessageCount = 0;
+            let errorMessageCount = 0;
+
             for (const entry of body.entry) {
                 for (const change of entry.changes) {
                     if (change.value.messages) {
                         const messages = change.value.messages;
                         
-                        logInfo('Procesando mensajes', { 
-                            messageCount: messages.length
+                        logInfo('📬 Processing Messages', { 
+                            messageCount: messages.length,
+                            timestamp: new Date().toISOString()
                         });
 
                         for (const message of messages) {
@@ -54,12 +64,6 @@ exports.receiveMessage = async (req, res) => {
                                 status: message.status || 'received'
                             };
 
-                            logInfo('Procesando mensaje individual', {
-                                messageId: messageData.id,
-                                type: messageData.type,
-                                from: messageData.from
-                            });
-
                             try {
                                 // Procesar el mensaje
                                 const conversation = await conversationService.processIncomingMessage(messageData);
@@ -69,43 +73,78 @@ exports.receiveMessage = async (req, res) => {
                                     await whatsappService.sendReadReceipt(messageData.from, messageData.id);
                                 }
 
-                                logInfo('Mensaje procesado correctamente', {
+                                console.log('✅ Message Processed Successfully', {
+                                    messageId: messageData.id,
                                     conversationId: conversation.whatsappId,
-                                    messageCount: conversation.messages.length,
-                                    lastStatus: conversation.messages[conversation.messages.length - 1]?.status
+                                    messageType: messageData.type,
+                                    messageCount: conversation.messages.length
                                 });
+
+                                processedMessageCount++;
                             } catch (error) {
-                                logError('Error procesando mensaje individual', {
+                                console.error('❌ Individual Message Processing Error', {
+                                    error: error.message,
+                                    messageId: messageData.id,
+                                    messageType: messageData.type,
+                                    stack: error.stack
+                                });
+
+                                logError('Message Processing Failed', {
                                     error: error.message,
                                     messageId: messageData.id,
                                     type: messageData.type
                                 });
+
+                                errorMessageCount++;
                             }
                         }
                     }
                 }
             }
             
+            // Log overall processing summary
+            const processingTime = Date.now() - startTime;
+            logInfo('🏁 Webhook Processing Summary', {
+                totalMessages: processedMessageCount + errorMessageCount,
+                processedMessages: processedMessageCount,
+                failedMessages: errorMessageCount,
+                processingTimeMs: processingTime
+            });
+
             // Meta requiere una respuesta 200 OK para los webhooks
             res.status(200).send('EVENT_RECEIVED');
         } else {
-            console.log('Objeto no reconocido:', body.object);
-            logError('Objeto no reconocido en webhook', { 
+            console.log('⚠️ Unrecognized Webhook Object', {
                 object: body.object,
                 expectedObject: 'whatsapp_business_account'
             });
+
+            logError('Unrecognized Webhook Object', { 
+                object: body.object,
+                expectedObject: 'whatsapp_business_account'
+            });
+
             // Aún así devolvemos 200 para webhooks de Meta
             res.status(200).json({ 
                 received: true,
-                error: 'Objeto no válido' 
+                error: 'Invalid Object' 
             });
         }
     } catch (error) {
-        console.error('Error procesando mensaje:', error);
-        logError('Error general en webhook', {
+        const processingTime = Date.now() - startTime;
+
+        console.error('🔥 Webhook Processing General Error', {
             error: error.message,
+            processingTimeMs: processingTime,
             stack: error.stack
         });
+
+        logError('General Webhook Error', {
+            error: error.message,
+            processingTimeMs: processingTime,
+            stack: error.stack
+        });
+
         // Siempre devolver 200 para webhook de Meta
         res.status(200).send('EVENT_RECEIVED');
     }
@@ -113,7 +152,7 @@ exports.receiveMessage = async (req, res) => {
 
 exports.getConversations = async (req, res) => {
     try {
-        logInfo('Solicitud de listado de conversaciones');
+        logInfo('📋 Requesting Conversations List');
         const conversations = Array.from(conversationService.activeConversations.values());
         
         const formattedConversations = conversations.map(conv => ({
@@ -133,19 +172,19 @@ exports.getConversations = async (req, res) => {
             metadata: conv.metadata
         }));
 
-        logInfo('Enviando listado de conversaciones', {
+        logInfo('📊 Sending Conversations List', {
             count: formattedConversations.length,
             activeConversations: formattedConversations.length
         });
 
         res.status(200).json(formattedConversations);
     } catch (error) {
-        logError('Error obteniendo conversaciones', {
+        logError('❌ Error Retrieving Conversations', {
             error: error.message,
             stack: error.stack
         });
         res.status(500).json({ 
-            error: 'Error obteniendo conversaciones',
+            error: 'Error retrieving conversations',
             message: error.message 
         });
     }
@@ -153,22 +192,22 @@ exports.getConversations = async (req, res) => {
 
 exports.getConversationAnalytics = async (req, res) => {
     try {
-        logInfo('Solicitud de analytics de conversaciones');
+        logInfo('📈 Requesting Conversation Analytics');
         const analytics = await conversationService.getConversationAnalytics();
         
-        logInfo('Analytics generados correctamente', {
+        logInfo('📊 Analytics Generated Successfully', {
             activeConversations: analytics.activeConversations,
             totalMessages: analytics.conversations.reduce((acc, conv) => acc + conv.messageCount, 0)
         });
         
         res.status(200).json(analytics);
     } catch (error) {
-        logError('Error generando analytics', {
+        logError('❌ Error Generating Analytics', {
             error: error.message,
             stack: error.stack
         });
         res.status(500).json({ 
-            error: 'Error interno del servidor',
+            error: 'Internal Server Error',
             message: error.message 
         });
     }
