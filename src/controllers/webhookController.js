@@ -1,8 +1,11 @@
 // src/controllers/webhookController.js
 const conversationService = require('../services/conversationService');
 const whatsappService = require('../services/whatsappService');
-const wsManager = require('../services/wsManager'); // Asegúrate de importar el WebSocket Manager
+const WebSocketManager = require('../services/websocketService');
 const { logInfo, logError } = require('../utils/logger');
+
+// Obtener la instancia del WebSocket Manager
+const wsManager = WebSocketManager.getInstance();
 
 // Validadores
 const WebhookValidator = {
@@ -60,21 +63,8 @@ const MessageProcessor = {
                 await whatsappService.sendReadReceipt(messageData.id);
             }
 
-            // Broadcast del mensaje procesado
-            wsManager.broadcast({
-                type: 'messageProcessed',
-                data: {
-                    messageId: messageData.id,
-                    conversationId: conversation.whatsappId,
-                    message: {
-                        id: messageData.id,
-                        type: messageData.type,
-                        content: messageData.text || messageData.audio,
-                        timestamp: new Date(),
-                        status: 'processed'
-                    }
-                }
-            });
+            // Notificar a través de WebSocket
+            wsManager.broadcastConversationUpdate(conversation);
 
             logInfo('Message Processed Successfully', {
                 messageId: messageData.id,
@@ -125,7 +115,7 @@ const MessageProcessor = {
             }
         }
 
-        // Broadcast resultados del procesamiento
+        // Notificar resultados del procesamiento por lotes
         wsManager.broadcast({
             type: 'messagesBatchProcessed',
             data: results
@@ -160,12 +150,8 @@ const WebhookProcessor = {
             results.errors += messageResults.errors;
             results.details = results.details.concat(messageResults.details);
 
-            // Broadcast estado de conversaciones actualizado
-            const conversations = conversationService.getAllConversations();
-            wsManager.broadcast({
-                type: 'conversationsUpdated',
-                data: conversations
-            });
+            // Notificar actualización de conversaciones
+            wsManager.broadcastConversations();
         }
 
         return results;
@@ -257,7 +243,7 @@ exports.receiveMessage = async (req, res) => {
 
         logInfo('Webhook Processing Summary', summary);
 
-        // Broadcast resumen de procesamiento
+        // Notificar resumen de procesamiento
         wsManager.broadcast({
             type: 'webhookProcessingSummary',
             data: summary
@@ -273,7 +259,7 @@ exports.receiveMessage = async (req, res) => {
             timestamp: new Date()
         });
 
-        // Broadcast error
+        // Notificar error
         wsManager.broadcast({
             type: 'webhookProcessingError',
             data: {
@@ -342,7 +328,6 @@ exports.getConversationAnalytics = async (req, res) => {
     }
 };
 
-// Nueva ruta para manejar heartbeats
 exports.handleHeartbeat = async (req, res) => {
     try {
         const { conversationId } = req.body;

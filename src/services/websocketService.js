@@ -1,7 +1,10 @@
 // src/services/websocketService.js
+const WebSocket = require('ws');
+const EventEmitter = require('events');
 
-class WebSocketManager {
+class WebSocketManager extends EventEmitter {
     constructor(server) {
+        super();
         this.wss = new WebSocket.Server({ server });
         this.connections = new Map();
         this.heartbeatInterval = 45000; // 45 segundos
@@ -11,10 +14,48 @@ class WebSocketManager {
         this.setupConversationEvents();
     }
 
+    setupWebSocket() {
+        this.wss.on('connection', (ws, req) => {
+            const id = req.headers['sec-websocket-key'];
+            const connection = {
+                ws,
+                lastHeartbeat: Date.now()
+            };
+
+            this.connections.set(id, connection);
+
+            // Configurar heartbeat
+            const heartbeat = setInterval(() => {
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.ping();
+                }
+            }, this.heartbeatInterval);
+
+            ws.on('pong', () => {
+                if (this.connections.has(id)) {
+                    this.connections.get(id).lastHeartbeat = Date.now();
+                }
+            });
+
+            ws.on('close', () => {
+                clearInterval(heartbeat);
+                this.connections.delete(id);
+            });
+
+            ws.on('error', (error) => {
+                console.error('WebSocket error:', error);
+                clearInterval(heartbeat);
+                this.connections.delete(id);
+            });
+
+            // Enviar conversaciones actuales al nuevo cliente
+            this.broadcastConversations();
+        });
+    }
+
     setupConversationEvents() {
         const conversationService = require('./conversationService');
         
-        // Escuchar eventos de actualización de conversaciones
         conversationService.on('conversationUpdated', (conversation) => {
             this.broadcastConversationUpdate(conversation);
         });
@@ -82,7 +123,6 @@ class WebSocketManager {
             }
         });
 
-        // Log del resultado del broadcast
         console.log('Broadcast completado:', {
             successCount,
             errorCount,
@@ -90,3 +130,15 @@ class WebSocketManager {
         });
     }
 }
+
+// Exportar una instancia única
+let instance = null;
+
+module.exports = {
+    getInstance: (server) => {
+        if (!instance) {
+            instance = new WebSocketManager(server);
+        }
+        return instance;
+    }
+};
