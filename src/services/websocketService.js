@@ -12,7 +12,7 @@ class WebSocketManager {
 
     initialize(server) {
         if (this.wss) {
-            return; // Ya inicializado
+            return;
         }
         
         if (!server) {
@@ -23,7 +23,6 @@ class WebSocketManager {
             this.wss = new WebSocket.Server({ server });
             this.setupWebSocket();
             this.setupConversationEvents();
-            
             logInfo('WebSocket Server inicializado correctamente');
         } catch (error) {
             logError('Error inicializando WebSocket Server:', {
@@ -37,40 +36,77 @@ class WebSocketManager {
     setupWebSocket() {
         this.wss.on('connection', (ws, req) => {
             const id = req.headers['sec-websocket-key'];
+            logInfo('Nueva conexión WebSocket establecida', { id });
+
             const connection = {
                 ws,
-                lastHeartbeat: Date.now()
+                lastHeartbeat: Date.now(),
+                info: {
+                    id,
+                    ip: req.socket.remoteAddress,
+                    userAgent: req.headers['user-agent']
+                }
             };
 
             this.connections.set(id, connection);
+
+            // Manejar mensajes entrantes
+            ws.on('message', async (message) => {
+                try {
+                    const data = JSON.parse(message.toString());
+                    logInfo('Mensaje WebSocket recibido:', { id, type: data.type });
+                    
+                    switch (data.type) {
+                        case 'getConversations':
+                            await this.broadcastConversations();
+                            break;
+                        case 'heartbeat':
+                            this.updateConnectionHeartbeat(id);
+                            break;
+                        default:
+                            logInfo('Tipo de mensaje no manejado:', { type: data.type });
+                    }
+                } catch (error) {
+                    logError('Error procesando mensaje WebSocket:', {
+                        id,
+                        error: error.message,
+                        message: message.toString()
+                    });
+                }
+            });
 
             // Configurar heartbeat
             const heartbeat = setInterval(() => {
                 try {
                     if (ws.readyState === WebSocket.OPEN) {
                         ws.ping();
+                        this.sendToClient(id, {
+                            type: 'heartbeat',
+                            timestamp: Date.now()
+                        });
                     }
                 } catch (error) {
                     clearInterval(heartbeat);
                     this.connections.delete(id);
-                    logError('Error en heartbeat:', error);
+                    logError('Error en heartbeat:', {
+                        id,
+                        error: error.message
+                    });
                 }
             }, this.heartbeatInterval);
 
             ws.on('pong', () => {
-                if (this.connections.has(id)) {
-                    this.connections.get(id).lastHeartbeat = Date.now();
-                }
+                this.updateConnectionHeartbeat(id);
             });
 
             ws.on('close', () => {
                 clearInterval(heartbeat);
                 this.connections.delete(id);
-                logInfo('WebSocket connection closed', { id });
+                logInfo('Conexión WebSocket cerrada', { id });
             });
 
             ws.on('error', (error) => {
-                logError('WebSocket connection error:', {
+                logError('Error en conexión WebSocket:', {
                     id,
                     error: error.message,
                     stack: error.stack
@@ -79,19 +115,61 @@ class WebSocketManager {
                 this.connections.delete(id);
             });
 
+            // Enviar estado inicial
+            this.sendToClient(id, {
+                type: 'connected',
+                data: {
+                    id,
+                    timestamp: Date.now(),
+                    serverInfo: {
+                        uptime: process.uptime(),
+                        connections: this.connections.size
+                    }
+                }
+            });
+
             // Enviar conversaciones actuales al nuevo cliente
             this.broadcastConversations();
         });
+    }
+
+    sendToClient(id, data) {
+        try {
+            const connection = this.connections.get(id);
+            if (connection && connection.ws.readyState === WebSocket.OPEN) {
+                connection.ws.send(JSON.stringify(data));
+                logInfo('Mensaje enviado al cliente', { 
+                    id, 
+                    type: data.type 
+                });
+            }
+        } catch (error) {
+            logError('Error enviando mensaje al cliente:', {
+                id,
+                error: error.message,
+                data
+            });
+        }
+    }
+
+    updateConnectionHeartbeat(id) {
+        const connection = this.connections.get(id);
+        if (connection) {
+            connection.lastHeartbeat = Date.now();
+            logInfo('Heartbeat actualizado', { id, timestamp: connection.lastHeartbeat });
+        }
     }
 
     setupConversationEvents() {
         const conversationService = require('./conversationService');
         
         conversationService.on('conversationUpdated', (conversation) => {
+            logInfo('Evento conversationUpdated recibido');
             this.broadcastConversationUpdate(conversation);
         });
 
         conversationService.on('newMessage', (conversationId) => {
+            logInfo('Evento newMessage recibido', { conversationId });
             this.broadcastConversations();
         });
     }
@@ -99,7 +177,8 @@ class WebSocketManager {
     broadcastConversationUpdate(conversation) {
         const message = {
             type: 'conversationUpdate',
-            data: this.formatConversation(conversation)
+            data: this.formatConversation(conversation),
+            timestamp: Date.now()
         };
 
         this.broadcast(message);
@@ -113,10 +192,13 @@ class WebSocketManager {
         const message = {
             type: 'conversations',
             data: conversations,
-            timestamp: new Date().toISOString()
+            timestamp: Date.now()
         };
 
         this.broadcast(message);
+        logInfo('Conversaciones transmitidas', { 
+            count: conversations.length 
+        });
     }
 
     formatConversation(conversation) {
@@ -136,61 +218,6 @@ class WebSocketManager {
             status: conversation.status,
             metadata: conversation.metadata
         };
-    }
-
-    getStats() {
-        return {
-            activeConnections: this.connections.size,
-            uptime: process.uptime(),
-            timestamp: new Date().toISOString(),
-            memory: process.memoryUsage(),
-            status: this.wss ? 'running' : 'initializing',
-            heartbeatInterval: this.heartbeatInterval,
-            connections: Array.from(this.connections.entries()).map(([id, conn]) => ({
-                id,
-                lastHeartbeat: conn.lastHeartbeat,
-                readyState: conn.ws.readyState
-            }))
-        };
-    }
-
-    async close() {
-        if (this.wss) {
-            // Notificar a los clientes
-            this.broadcast({
-                type: 'shutdown',
-                data: { message: 'Server shutting down...' }
-            });
-
-            // Cerrar todas las conexiones activas
-            for (const [id, connection] of this.connections) {
-                try {
-                    connection.ws.close();
-                } catch (err) {
-                    logError('Error cerrando conexión WebSocket:', {
-                        id,
-                        error: err.message
-                    });
-                }
-            }
-
-            // Limpiar el mapa de conexiones
-            this.connections.clear();
-
-            // Cerrar el servidor WebSocket
-            return new Promise((resolve, reject) => {
-                this.wss.close((err) => {
-                    if (err) {
-                        logError('Error cerrando servidor WebSocket:', err);
-                        reject(err);
-                    } else {
-                        this.wss = null;
-                        resolve();
-                    }
-                });
-            });
-        }
-        return Promise.resolve();
     }
 
     broadcast(data) {
@@ -215,12 +242,63 @@ class WebSocketManager {
         logInfo('Broadcast completado:', {
             successCount,
             errorCount,
-            totalConnections: this.connections.size
+            totalConnections: this.connections.size,
+            messageType: data.type
         });
+    }
+
+    getStats() {
+        return {
+            activeConnections: this.connections.size,
+            uptime: process.uptime(),
+            timestamp: Date.now(),
+            memory: process.memoryUsage(),
+            status: this.wss ? 'running' : 'initializing',
+            connections: Array.from(this.connections.entries()).map(([id, conn]) => ({
+                id,
+                lastHeartbeat: conn.lastHeartbeat,
+                readyState: conn.ws.readyState,
+                info: conn.info
+            }))
+        };
+    }
+
+    async close() {
+        if (this.wss) {
+            this.broadcast({
+                type: 'shutdown',
+                data: { message: 'Server shutting down...', timestamp: Date.now() }
+            });
+
+            for (const [id, connection] of this.connections) {
+                try {
+                    connection.ws.close();
+                } catch (err) {
+                    logError('Error cerrando conexión WebSocket:', {
+                        id,
+                        error: err.message
+                    });
+                }
+            }
+
+            this.connections.clear();
+
+            return new Promise((resolve, reject) => {
+                this.wss.close((err) => {
+                    if (err) {
+                        logError('Error cerrando servidor WebSocket:', err);
+                        reject(err);
+                    } else {
+                        this.wss = null;
+                        resolve();
+                    }
+                });
+            });
+        }
+        return Promise.resolve();
     }
 }
 
-// Exportar una instancia única
 let instance = null;
 
 module.exports = {
