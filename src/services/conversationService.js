@@ -5,39 +5,31 @@ const EventEmitter = require('events');
 
 function validateWhatsAppMessage(message) {
     try {
-        // Log inicial para debug
-        logDebug('Validando mensaje WhatsApp', {
-            hasMessage: !!message,
-            type: message?.type,
-            messageStructure: {
-                hasFrom: !!message?.from,
-                hasId: !!message?.id,
-                hasText: !!message?.text,
-                hasBody: !!message?.text?.body
-            }
-        });
-
         // Validación básica
-        if (!message || !message.from || !message.id || !message.type) {
+        if (!message || !message.from || !message.id) {
             logError('Mensaje de WhatsApp inválido - campos básicos faltantes', {
                 hasMessage: !!message,
-                hasFrom: !!message?.from,
-                hasId: !!message?.id,
-                hasType: !!message?.type
+                hasFrom: message?.from,
+                hasId: message?.id,
+                messageContent: message
             });
+            return false;
+        }
+
+        // Validación del tipo de mensaje
+        if (!message.type) {
+            logError('Tipo de mensaje faltante', { messageId: message.id });
             return false;
         }
 
         // Validación por tipo
         switch (message.type) {
             case 'text':
-                // Validación específica para texto
-                const isValidText = message.text && typeof message.text.body === 'string';
-                if (!isValidText) {
-                    logError('Mensaje de texto de WhatsApp inválido', {
+                if (!message.text?.body) {
+                    logError('Estructura de mensaje de texto inválida', {
                         messageId: message.id,
                         hasText: !!message.text,
-                        bodyType: typeof message.text?.body
+                        hasBody: !!message.text?.body
                     });
                     return false;
                 }
@@ -45,7 +37,7 @@ function validateWhatsAppMessage(message) {
 
             case 'audio':
                 if (!message.audio?.id) {
-                    logError('Mensaje de audio de WhatsApp inválido', { 
+                    logError('Estructura de mensaje de audio inválida', { 
                         messageId: message.id,
                         hasAudio: !!message.audio 
                     });
@@ -55,7 +47,7 @@ function validateWhatsAppMessage(message) {
 
             case 'document':
                 if (!message.document?.id) {
-                    logError('Mensaje de documento de WhatsApp inválido', { 
+                    logError('Estructura de mensaje de documento inválida', { 
                         messageId: message.id,
                         hasDocument: !!message.document 
                     });
@@ -64,25 +56,28 @@ function validateWhatsAppMessage(message) {
                 break;
 
             default:
-                logError('Tipo de mensaje de WhatsApp no soportado', {
+                logError('Tipo de mensaje no soportado', {
                     messageId: message.id,
                     type: message.type
                 });
                 return false;
         }
 
-        // Log de éxito
-        logDebug('Mensaje validado correctamente', {
+        // Log de éxito usando logInfo en lugar de logDebug
+        logInfo('Mensaje validado exitosamente', {
             messageId: message.id,
-            type: message.type
+            type: message.type,
+            from: message.from
         });
 
         return true;
+
     } catch (error) {
-        logError('Error en validación de mensaje', {
+        logError('Error durante la validación del mensaje', {
             error: error.message,
             messageId: message?.id,
-            messageType: message?.type
+            messageType: message?.type,
+            stack: error.stack
         });
         return false;
     }
