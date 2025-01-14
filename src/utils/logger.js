@@ -16,5 +16,15 @@ const logInfo = (message, details) => {
     }
   };
   
-  module.exports = { logInfo, logError };
+  const logDebug = (message, details) => {
+    if (process.env.NODE_ENV !== 'production') {
+        if (details) {
+            console.log(`[DEBUG] ${message}`, JSON.stringify(details, null, 2));
+        } else {
+            console.log(`[DEBUG] ${message}`);
+        }
+    }
+};
+
+module.exports = { logInfo, logError, logDebug };
   
