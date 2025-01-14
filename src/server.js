@@ -44,11 +44,20 @@ class JuliServer {
         
         // Configurar broadcast periódico de estado
         setInterval(() => {
-            const stats = this.wsManager.getStats();
-            this.wsManager.broadcast({
-                type: 'status',
-                data: stats
-            });
+            try {
+                if (this.wsManager && typeof this.wsManager.getStats === 'function') {
+                    const stats = this.wsManager.getStats();
+                    this.wsManager.broadcast({
+                        type: 'status',
+                        data: stats
+                    });
+                }
+            } catch (error) {
+                logError('Error al obtener estadísticas del WebSocket:', {
+                    error: error.message,
+                    stack: error.stack
+                });
+            }
         }, 30000);
     }
 
