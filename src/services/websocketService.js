@@ -8,6 +8,7 @@ class WebSocketManager {
         this.wss = null;
         this.connections = new Map();
         this.heartbeatInterval = 45000; // 45 segundos
+        this.conversationService = require('./conversationService');
     }
 
     initialize(server) {
@@ -161,44 +162,55 @@ class WebSocketManager {
     }
 
     setupConversationEvents() {
-        const conversationService = require('./conversationService');
-        
-        conversationService.on('conversationUpdated', (conversation) => {
+        this.conversationService.on('conversationUpdated', (conversation) => {
             logInfo('Evento conversationUpdated recibido');
             this.broadcastConversationUpdate(conversation);
         });
 
-        conversationService.on('newMessage', (conversationId) => {
+        this.conversationService.on('newMessage', (conversationId) => {
             logInfo('Evento newMessage recibido', { conversationId });
             this.broadcastConversations();
         });
     }
 
     broadcastConversationUpdate(conversation) {
-        const message = {
-            type: 'conversationUpdate',
-            data: this.formatConversation(conversation),
-            timestamp: Date.now()
-        };
+        try {
+            const message = {
+                type: 'conversationUpdate',
+                data: this.formatConversation(conversation),
+                timestamp: Date.now()
+            };
 
-        this.broadcast(message);
+            this.broadcast(message);
+        } catch (error) {
+            logError('Error en broadcastConversationUpdate:', {
+                error: error.message,
+                stack: error.stack
+            });
+        }
     }
 
     broadcastConversations() {
-        const conversationService = require('./conversationService');
-        const conversations = Array.from(conversationService.activeConversations.values())
-            .map(this.formatConversation);
+        try {
+            const conversations = this.conversationService.getAllConversations()
+                .map(this.formatConversation);
 
-        const message = {
-            type: 'conversations',
-            data: conversations,
-            timestamp: Date.now()
-        };
+            const message = {
+                type: 'conversations',
+                data: conversations,
+                timestamp: Date.now()
+            };
 
-        this.broadcast(message);
-        logInfo('Conversaciones transmitidas', { 
-            count: conversations.length 
-        });
+            this.broadcast(message);
+            logInfo('Conversaciones transmitidas', { 
+                count: conversations.length 
+            });
+        } catch (error) {
+            logError('Error en broadcastConversations:', {
+                error: error.message,
+                stack: error.stack
+            });
+        }
     }
 
     formatConversation(conversation) {
