@@ -6,130 +6,123 @@ const { logInfo, logError } = require('../utils/logger');
 
 class WebhookController {
     constructor() {
-        // Asegurarse de que las dependencias estén disponibles antes de usarlas
         try {
             this.wsManager = WebSocketManager.getInstance();
-            this.setupDependencies();
         } catch (error) {
-            logError('Error initializing WebhookController:', error);
-            // Inicializar con valores por defecto si falla
+            logError('Error initializing WebhookController', {
+                error: error.message || 'Unknown error'
+            });
+            // Fallback para el wsManager
             this.wsManager = {
                 broadcast: () => {},
-                broadcastConversationUpdate: () => {}
+                broadcastConversationUpdate: () => {},
+                broadcastConversations: () => {}
             };
         }
     }
 
-    setupDependencies() {
-        this.messageProcessor = new MessageProcessor(
-            conversationService,
-            whatsappService,
-            this.wsManager
-        );
-        this.webhookProcessor = new WebhookProcessor(
-            this.messageProcessor,
-            this.wsManager
-        );
-    }
-
     async verifyWebhook(req, res) {
-        try {
-            const mode = req.query['hub.mode'];
-            const token = req.query['hub.verify_token'];
-            const challenge = req.query['hub.challenge'];
-            const verifyToken = process.env.VERIFY_TOKEN;
+        const mode = req.query['hub.mode'];
+        const token = req.query['hub.verify_token'];
+        const challenge = req.query['hub.challenge'];
+        const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
-            logInfo('Webhook verification request received', {
-                mode,
-                tokenMatch: token === verifyToken,
-                hasChallenge: !!challenge
-            });
+        logInfo('Webhook verification request received', {
+            mode,
+            tokenMatch: token === VERIFY_TOKEN,
+            hasChallenge: !!challenge
+        });
 
-            if (mode === 'subscribe' && token === verifyToken) {
-                logInfo('Webhook verified successfully');
-                return res.status(200).send(challenge);
-            }
-
-            logError('Webhook verification failed');
-            return res.status(403).send('Forbidden');
-        } catch (error) {
-            logError('Error in webhook verification', error);
-            return res.status(500).send('Internal Server Error');
+        if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+            logInfo('Webhook verified successfully');
+            return res.status(200).send(challenge);
         }
+
+        logError('Webhook verification failed');
+        return res.status(403).send('Forbidden');
     }
 
     async receiveMessage(req, res) {
         try {
             logInfo('Webhook payload received', { body: req.body });
-            
-            // Validación básica del payload
-            if (!req.body || !req.body.object || !Array.isArray(req.body.entry)) {
+
+            if (!this._validateWebhookPayload(req.body)) {
                 throw new Error('Invalid webhook payload structure');
             }
 
-            const results = await this._processWebhookPayload(req.body);
-            
-            logInfo('Webhook processing completed', results);
+            await this._processWebhookPayload(req.body);
             return res.status(200).send('EVENT_RECEIVED');
         } catch (error) {
-            logError('Error processing webhook', error);
-            // Siempre devolvemos 200 para el webhook de Facebook
+            logError('Error processing webhook', { error: error.message });
+            // Siempre retornamos 200 para webhooks de WhatsApp
             return res.status(200).send('EVENT_RECEIVED');
         }
+    }
+
+    _validateWebhookPayload(body) {
+        return body && 
+               body.object === 'whatsapp_business_account' && 
+               Array.isArray(body.entry);
     }
 
     async _processWebhookPayload(body) {
-        const results = {
-            processed: 0,
-            errors: 0,
-            details: []
-        };
-
         for (const entry of body.entry) {
-            for (const change of entry.changes) {
-                if (change.value.messages) {
-                    await this._processMessages(change.value.messages, results);
+            if (entry.changes) {
+                for (const change of entry.changes) {
+                    if (change.value?.messages) {
+                        await this._processMessages(change.value.messages, change.value);
+                    }
                 }
             }
         }
-
-        return results;
     }
 
-    async _processMessages(messages, results) {
+    async _processMessages(messages, context) {
         for (const message of messages) {
             try {
-                const formattedMessage = this._formatMessage(message);
+                logInfo('Processing message', {
+                    messageId: message.id,
+                    type: message.type,
+                    from: message.from
+                });
+
+                const formattedMessage = this._formatMessage(message, context);
                 const conversation = await conversationService.processIncomingMessage(formattedMessage);
-                
+
+                // Marcar como leído si es mensaje de texto
                 if (message.type === 'text') {
-                    await whatsappService.markAsRead(message.id);
+                    try {
+                        await whatsappService.markAsRead(message.id);
+                        logInfo('Message marked as read', { messageId: message.id });
+                    } catch (error) {
+                        logError('Error marking message as read', {
+                            messageId: message.id,
+                            error: error.message
+                        });
+                    }
                 }
 
-                this.wsManager?.broadcastConversationUpdate(conversation);
-                
-                results.processed++;
-                results.details.push({
-                    id: message.id,
-                    status: 'success',
-                    type: message.type,
-                    timestamp: new Date()
+                // Notificar a través de WebSocket
+                if (this.wsManager) {
+                    this.wsManager.broadcastConversationUpdate(conversation);
+                    this.wsManager.broadcastConversations();
+                }
+
+                logInfo('Message processed successfully', {
+                    messageId: message.id,
+                    conversationId: conversation.id || conversation.whatsappId
                 });
+
             } catch (error) {
-                results.errors++;
-                results.details.push({
-                    id: message.id,
-                    status: 'error',
-                    type: message.type,
-                    error: error.message,
-                    timestamp: new Date()
+                logError('Error processing individual message', {
+                    messageId: message.id,
+                    error: error.message
                 });
-                logError('Error processing message', { messageId: message.id, error });
             }
         }
     }
 
-    _formatMessage(message) {
+    _formatMessage(message, context) {
         return {
             id: message.id,
             from: message.from,
@@ -138,45 +131,59 @@ class WebhookController {
             text: message.text?.body || '',
             audio: message.audio?.id,
             direction: 'inbound',
-            status: 'received'
+            status: 'received',
+            profile: context.contacts?.[0],
+            metadata: {
+                displayPhoneNumber: context.metadata?.display_phone_number,
+                phoneNumberId: context.metadata?.phone_number_id
+            }
         };
     }
 
     async getConversations(req, res) {
         try {
-            const conversations = conversationService.getAllConversations();
+            logInfo('Requesting conversations list');
+            
+            const conversations = await conversationService.getAllConversations();
+            
+            logInfo('Conversations retrieved successfully', {
+                count: conversations.length
+            });
+
             return res.status(200).json(conversations);
         } catch (error) {
-            logError('Error retrieving conversations', error);
-            return res.status(500).json({ error: error.message });
-        }
-    }
-
-    async getConversationAnalytics(req, res) {
-        try {
-            const analytics = await conversationService.getConversationAnalytics();
-            return res.status(200).json(analytics);
-        } catch (error) {
-            logError('Error generating analytics', error);
-            return res.status(500).json({ error: error.message });
+            logError('Error retrieving conversations', { error: error.message });
+            return res.status(500).json({
+                error: 'Error retrieving conversations',
+                message: error.message
+            });
         }
     }
 
     async handleHeartbeat(req, res) {
         try {
             const { conversationId } = req.body;
+            
             if (!conversationId) {
-                return res.status(400).json({ error: 'ConversationId is required' });
+                logError('Missing conversationId in heartbeat request');
+                return res.status(400).json({ 
+                    error: 'ConversationId is required' 
+                });
             }
 
             await conversationService.updateConversationHeartbeat(conversationId);
-            return res.status(200).json({ status: 'success', timestamp: new Date() });
+            logInfo('Heartbeat updated successfully', { conversationId });
+            
+            return res.status(200).json({
+                status: 'success',
+                timestamp: new Date()
+            });
         } catch (error) {
-            logError('Heartbeat error', error);
+            logError('Heartbeat error', { error: error.message });
             return res.status(400).json({ error: error.message });
         }
     }
 }
 
-// Exportar una instancia única del controlador
+// Exportar una única instancia del controlador
 module.exports = new WebhookController();
