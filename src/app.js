@@ -6,6 +6,7 @@ const http = require('http');
 const WebSocket = require('ws');
 const routes = require('./routes');
 const conversationService = require('./services/conversationService');
+const WebSocketManager = require('./services/websocketService');
 const { logInfo, logError } = require('./utils/logger');
 
 // Cargar variables de entorno
@@ -14,7 +15,7 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 
-// Mantener registro de conexiones WebSocket activas
+// Configuración del servidor WebSocket
 const wss = new WebSocket.Server({ 
     server,
     path: '/ws'
@@ -24,7 +25,7 @@ const activeConnections = new Set();
 
 // Función para enviar actualizaciones a todos los clientes conectados
 const broadcastConversations = () => {
-    if (activeConnections.size === 0) return; // No hacer nada si no hay clientes
+    if (activeConnections.size === 0) return;
 
     const conversationsMap = conversationService.activeConversations;
     const conversations = Array.from(conversationsMap.values())
@@ -83,12 +84,17 @@ const broadcastConversations = () => {
 
 // Configuración de conexiones WebSocket
 wss.on('connection', (ws, req) => {
-    logInfo('Nueva conexión WebSocket:', {
-        ip: req.socket.remoteAddress,
-        timestamp: new Date().toISOString()
+    logInfo('Nueva conexión WebSocket establecida', {
+        id: req.headers['sec-websocket-key']
     });
     
     activeConnections.add(ws);
+    
+    // Enviar mensaje de conexión exitosa
+    ws.send(JSON.stringify({
+        type: 'connected',
+        timestamp: new Date().toISOString()
+    }));
     
     // Enviar estado inicial
     broadcastConversations();
@@ -106,7 +112,7 @@ wss.on('connection', (ws, req) => {
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
-            logInfo('Mensaje recibido del cliente:', {
+            logInfo('Mensaje recibido del cliente', {
                 type: data.type,
                 timestamp: new Date().toISOString()
             });
@@ -119,21 +125,11 @@ wss.on('connection', (ws, req) => {
                 }));
             }
         } catch (error) {
-            logError('Error procesando mensaje del cliente:', {
+            logError('Error procesando mensaje del cliente', {
                 error: error.message,
                 timestamp: new Date().toISOString()
             });
         }
-    });
-    
-    // Manejar errores de WebSocket
-    ws.on('error', (error) => {
-        logError('Error en conexión WebSocket:', {
-            error: error.message,
-            timestamp: new Date().toISOString()
-        });
-        activeConnections.delete(ws);
-        cleanup();
     });
     
     // Función para limpiar eventos cuando se cierra la conexión
@@ -144,6 +140,16 @@ wss.on('connection', (ws, req) => {
         conversationService.removeListener('conversationUpdated', handleConversationUpdate);
     };
     
+    // Manejar errores de WebSocket
+    ws.on('error', (error) => {
+        logError('Error en conexión WebSocket', {
+            error: error.message,
+            timestamp: new Date().toISOString()
+        });
+        activeConnections.delete(ws);
+        cleanup();
+    });
+    
     // Limpiar recursos cuando se cierra la conexión
     ws.on('close', () => {
         logInfo('Cliente WebSocket desconectado');
@@ -152,11 +158,11 @@ wss.on('connection', (ws, req) => {
     });
 });
 
-// Middleware para procesar JSON y formularios
+// Middleware
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Middleware para CORS
+// CORS
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
@@ -164,12 +170,12 @@ app.use((req, res, next) => {
     next();
 });
 
-// Servir archivos estáticos
+// Archivos estáticos
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Middleware para logging de requests
+// Logging de requests
 app.use((req, res, next) => {
-    logInfo(`${req.method} ${req.url}`);
+    logInfo(`${req.method} ${req.path}`);
     next();
 });
 
@@ -179,11 +185,10 @@ app.get('/', (req, res) => {
 });
 
 app.get('/monitor', (req, res) => {
-    logInfo('Sirviendo monitor de conversaciones');
     res.sendFile(path.join(__dirname, 'public', 'conversations.html'));
 });
 
-// Nueva ruta de depuración para estado de WebSocket
+// Ruta de depuración para estado de WebSocket
 app.get('/api/debug/ws-status', (req, res) => {
     const status = {
         activeConnections: activeConnections.size,
@@ -213,7 +218,7 @@ app.get('/api/debug/ws-status', (req, res) => {
 // Rutas de la API
 app.use('/api', routes);
 
-// Health check mejorado
+// Health check
 app.get('/health', (req, res) => {
     res.status(200).json({ 
         status: 'healthy',
@@ -227,7 +232,13 @@ app.get('/health', (req, res) => {
 
 // Manejo de errores global
 app.use((err, req, res, next) => {
-    logError('Error interno:', err);
+    logError('Error interno:', {
+        error: err.message,
+        stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
+        path: req.path,
+        method: req.method
+    });
+    
     res.status(500).json({
         error: 'Error interno del servidor',
         message: process.env.NODE_ENV === 'development' ? err.message : 'Ha ocurrido un error',
@@ -241,6 +252,43 @@ app.use((req, res) => {
         error: 'Ruta no encontrada',
         path: req.originalUrl,
         timestamp: new Date().toISOString()
+    });
+});
+
+// Manejo de apagado graceful
+process.on('SIGTERM', () => {
+    logInfo('Señal SIGTERM recibida. Iniciando apagado graceful...');
+    
+    // Notificar a los clientes WebSocket
+    const shutdownMessage = JSON.stringify({
+        type: 'shutdown',
+        timestamp: new Date().toISOString()
+    });
+
+    let successCount = 0;
+    let errorCount = 0;
+
+    activeConnections.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            try {
+                client.send(shutdownMessage);
+                successCount++;
+            } catch (error) {
+                errorCount++;
+            }
+        }
+    });
+
+    logInfo('Broadcast completado:', {
+        successCount,
+        errorCount,
+        totalConnections: activeConnections.size,
+        messageType: 'shutdown'
+    });
+
+    // Cerrar el servidor
+    server.close(() => {
+        process.exit(0);
     });
 });
 
