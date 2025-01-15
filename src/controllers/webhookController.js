@@ -278,7 +278,7 @@ exports.receiveMessage = async (req, res) => {
             processedMessages: results.processed,
             failedMessages: results.errors,
             processingTimeMs: processingTime,
-            activeConversations: conversationService.activeConversations.size,
+            activeConversations: conversationService.getAllConversations().length, // Método más seguro
             timestamp: new Date()
         };
 
