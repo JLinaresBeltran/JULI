@@ -1,4 +1,6 @@
 // src/controllers/webhookController.js
+
+const welcomeHandler = require('../services/welcomeHandlerService');
 const conversationService = require('../services/conversationService');
 const whatsappService = require('../services/whatsappService');
 const WebSocketManager = require('../services/websocketService');
@@ -26,7 +28,10 @@ const WebhookValidator = {
     },
 
     validateVerification(mode, token, challenge, verifyToken) {
-        return mode === 'subscribe' && token === verifyToken ? challenge : null;
+        if (mode !== 'subscribe' || token !== verifyToken) {
+            return null;
+        }
+        return challenge;
     }
 };
 
@@ -36,16 +41,11 @@ const MessageProcessor = {
         return {
             id: message.id,
             from: message.from,
-            timestamp: message.timestamp,
+            timestamp: new Date(parseInt(message.timestamp) * 1000).toISOString(),
             type: message.type,
-            // Mantener la estructura original del mensaje de texto
-            text: message.type === 'text' ? { 
-                body: message.text.body 
-            } : undefined,
-            // Mantener la estructura original del mensaje de audio
-            audio: message.type === 'audio' ? {
-                id: message.audio.id
-            } : undefined,
+            text: message.text,
+            audio: message.audio,
+            document: message.document,
             profile: changeContext.value.contacts?.[0],
             status: message.status || 'received',
             metadata: {
@@ -63,53 +63,71 @@ const MessageProcessor = {
                 from: messageData.from
             });
 
-           // Modificar el formateo del mensaje
-            const formattedMessage = {
-            id: messageData.id,
-            from: messageData.from,
-            timestamp: new Date(parseInt(messageData.timestamp) * 1000).toISOString(),
-            type: messageData.type,
-            // Extraer directamente el texto del body
-            text: messageData.text?.body || '',  // Cambio aquí
-            audio: messageData.audio?.id,
-            direction: 'inbound',
-            status: 'received',
-            profile: messageData.profile,
-            metadata: messageData.metadata
-            };
+            // Obtener o crear la conversación
+            const conversation = await conversationService.getConversation(messageData.from) || 
+                               await conversationService.createConversation(messageData.from);
 
-            const conversation = await conversationService.processIncomingMessage(messageData);
+            // Determinar si es el primer mensaje
+            const isFirstMessage = conversation.messages.length === 0;
+            messageData.isFirstMessage = isFirstMessage;
 
-            try {
-                if (messageData.type === 'text') {
+            // Procesar con welcomeHandler
+            const handlerResponse = await welcomeHandler.handleIncomingMessage(
+                messageData,
+                messageData.profile
+            );
+
+            // Agregar el mensaje a la conversación
+            await conversationService.addMessage(conversation.whatsappId, {
+                id: messageData.id,
+                timestamp: messageData.timestamp,
+                type: messageData.type,
+                direction: 'inbound',
+                content: messageData.text?.body || messageData.audio?.id || '',
+                status: 'received'
+            });
+
+            // Marcar como leído si es mensaje de texto
+            if (messageData.type === 'text') {
+                try {
                     await whatsappService.markAsRead(messageData.id);
-                    logInfo('Message marked as read', { messageId: messageData.id });
+                    logInfo('Mensaje marcado como leído', { messageId: messageData.id });
+                } catch (readError) {
+                    logError('Error marcando mensaje como leído:', readError);
                 }
-            } catch (readReceiptError) {
-                logError('Error marking message as read', {
-                    messageId: messageData.id,
-                    error: readReceiptError.message
-                });
-                // Continuar el proceso aunque falle el read receipt
+            }
+
+            // Enviar respuesta según el tipo
+            if (handlerResponse.type === 'welcome') {
+                await whatsappService.sendMessage(messageData.from, handlerResponse.content);
+            } else if (handlerResponse.type === 'redirect') {
+                // Actualizar metadatos de la conversación
+                conversation.metadata.serviceType = handlerResponse.serviceType;
+                await conversationService.updateConversation(conversation);
+                
+                // Enviar respuesta del chatbot
+                await whatsappService.sendMessage(messageData.from, handlerResponse.response);
             }
 
             // Notificar a través de WebSocket
             wsManager.broadcastConversationUpdate(conversation);
 
-            logInfo('Message Processed Successfully', {
+            logInfo('Mensaje procesado exitosamente', {
                 messageId: messageData.id,
                 conversationId: conversation.whatsappId,
-                messageType: messageData.type,
-                messageCount: conversation.messages.length,
-                conversationStatus: conversation.status
+                type: messageData.type
             });
 
-            return conversation;
+            return {
+                success: true,
+                handlerResponse,
+                conversation
+            };
+
         } catch (error) {
-            logError('Message Processing Failed', {
+            logError('Error procesando mensaje:', {
                 error: error.message,
                 messageId: messageData.id,
-                type: messageData.type,
                 stack: error.stack
             });
             throw error;
@@ -126,13 +144,15 @@ const MessageProcessor = {
         for (const message of messages) {
             try {
                 const messageData = this.constructMessageData(message, changeContext);
-                await this.processIndividualMessage(messageData);
+                const processResult = await this.processIndividualMessage(messageData);
+                
                 results.processed++;
                 results.details.push({
                     id: message.id,
                     status: 'success',
                     type: message.type,
-                    timestamp: new Date()
+                    timestamp: new Date(),
+                    response: processResult.handlerResponse
                 });
             } catch (error) {
                 results.errors++;
@@ -143,24 +163,9 @@ const MessageProcessor = {
                     error: error.message,
                     timestamp: new Date()
                 });
-
-                logError('Error processing message', {
-                    messageId: message.id,
-                    type: message.type,
-                    error: error.message,
-                    stack: error.stack
-                });
+                logError('Error procesando mensaje:', error);
             }
         }
-
-        // Notificar resultados del procesamiento por lotes
-        wsManager.broadcast({
-            type: 'messagesBatchProcessed',
-            data: {
-                ...results,
-                timestamp: new Date().toISOString()
-            }
-        });
 
         return results;
     }
@@ -176,10 +181,9 @@ const WebhookProcessor = {
         };
 
         if (change.value.messages) {
-            logInfo('Processing Messages', {
-                messageCount: change.value.messages.length,
-                field: change.field,
-                timestamp: new Date()
+            logInfo('Procesando mensajes', {
+                count: change.value.messages.length,
+                field: change.field
             });
 
             const messageResults = await MessageProcessor.processMessages(
@@ -191,8 +195,23 @@ const WebhookProcessor = {
             results.errors += messageResults.errors;
             results.details = results.details.concat(messageResults.details);
 
-            // Notificar actualización de conversaciones
+            // Notificar actualización
             wsManager.broadcastConversations();
+        }
+
+        if (change.value.statuses) {
+            // Procesar actualizaciones de estado de mensajes
+            for (const status of change.value.statuses) {
+                try {
+                    await conversationService.updateMessageStatus(
+                        status.id,
+                        status.status,
+                        status.timestamp
+                    );
+                } catch (error) {
+                    logError('Error actualizando estado de mensaje:', error);
+                }
+            }
         }
 
         return results;
@@ -206,10 +225,15 @@ const WebhookProcessor = {
         };
 
         for (const change of entry.changes) {
-            const changeResults = await this.processChange(change);
-            results.processed += changeResults.processed;
-            results.errors += changeResults.errors;
-            results.details = results.details.concat(changeResults.details);
+            try {
+                const changeResults = await this.processChange(change);
+                results.processed += changeResults.processed;
+                results.errors += changeResults.errors;
+                results.details = results.details.concat(changeResults.details);
+            } catch (error) {
+                logError('Error procesando cambio:', error);
+                results.errors++;
+            }
         }
 
         return results;
@@ -218,33 +242,35 @@ const WebhookProcessor = {
 
 // Controladores principales
 exports.verifyWebhook = (req, res) => {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-    const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+    try {
+        const mode = req.query['hub.mode'];
+        const token = req.query['hub.verify_token'];
+        const challenge = req.query['hub.challenge'];
+        const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
-    logInfo('Webhook Verification Request', {
-        mode,
-        tokenMatch: token === VERIFY_TOKEN,
-        hasChallenge: !!challenge
-    });
-
-    const validChallenge = WebhookValidator.validateVerification(
-        mode,
-        token,
-        challenge,
-        VERIFY_TOKEN
-    );
-
-    if (validChallenge) {
-        logInfo('Webhook Verified Successfully');
-        res.status(200).send(validChallenge);
-    } else {
-        logError('Webhook Verification Failed', {
+        logInfo('Solicitud de verificación de webhook', {
             mode,
-            tokenMatch: token === VERIFY_TOKEN
+            tokenMatch: token === VERIFY_TOKEN,
+            hasChallenge: !!challenge
         });
-        res.status(403).send('Forbidden');
+
+        const validChallenge = WebhookValidator.validateVerification(
+            mode,
+            token,
+            challenge,
+            VERIFY_TOKEN
+        );
+
+        if (validChallenge) {
+            logInfo('Webhook verificado exitosamente');
+            res.status(200).send(validChallenge);
+        } else {
+            logError('Verificación de webhook fallida');
+            res.status(403).send('Forbidden');
+        }
+    } catch (error) {
+        logError('Error en verificación de webhook:', error);
+        res.status(500).send('Internal Server Error');
     }
 };
 
@@ -257,15 +283,14 @@ exports.receiveMessage = async (req, res) => {
     };
 
     try {
-        const body = req.body;
-        logInfo('Webhook Payload Received', {
-            headers: req.headers,
-            body: body
+        logInfo('Payload de webhook recibido', {
+            body: req.body,
+            headers: req.headers
         });
 
-        WebhookValidator.validatePayload(body);
+        WebhookValidator.validatePayload(req.body);
 
-        for (const entry of body.entry) {
+        for (const entry of req.body.entry) {
             const entryResults = await WebhookProcessor.processEntry(entry);
             results.processed += entryResults.processed;
             results.errors += entryResults.errors;
@@ -278,11 +303,11 @@ exports.receiveMessage = async (req, res) => {
             processedMessages: results.processed,
             failedMessages: results.errors,
             processingTimeMs: processingTime,
-            activeConversations: conversationService.getAllConversations().length, // Método más seguro
+            activeConversations: conversationService.getActiveConversationCount(),
             timestamp: new Date()
         };
 
-        logInfo('Webhook Processing Summary', summary);
+        logInfo('Resumen de procesamiento de webhook', summary);
 
         // Notificar resumen de procesamiento
         wsManager.broadcast({
@@ -293,11 +318,10 @@ exports.receiveMessage = async (req, res) => {
         res.status(200).send('EVENT_RECEIVED');
     } catch (error) {
         const processingTime = Date.now() - startTime;
-        logError('Webhook Processing General Error', {
+        logError('Error general en procesamiento de webhook:', {
             error: error.message,
             processingTimeMs: processingTime,
-            stack: error.stack,
-            timestamp: new Date()
+            stack: error.stack
         });
 
         // Notificar error
@@ -315,56 +339,29 @@ exports.receiveMessage = async (req, res) => {
 
 exports.getConversations = async (req, res) => {
     try {
-        logInfo('Requesting Conversations List');
-        
         const conversations = conversationService.getAllConversations();
-
-        logInfo('Sending Conversations List', {
-            count: conversations.length,
-            activeConversations: conversations.length,
-            timestamp: new Date().toISOString()
+        logInfo('Enviando lista de conversaciones', {
+            count: conversations.length
         });
-
         res.status(200).json(conversations);
     } catch (error) {
-        logError('Error Retrieving Conversations', {
-            error: error.message,
-            stack: error.stack,
-            timestamp: new Date()
-        });
-        
+        logError('Error obteniendo conversaciones:', error);
         res.status(500).json({
             error: 'Error retrieving conversations',
-            message: error.message,
-            timestamp: new Date()
+            message: error.message
         });
     }
 };
 
 exports.getConversationAnalytics = async (req, res) => {
     try {
-        logInfo('Requesting Conversation Analytics');
-        
         const analytics = await conversationService.getConversationAnalytics();
-        
-        logInfo('Analytics Generated Successfully', {
-            activeConversations: analytics.activeConversations,
-            totalMessages: analytics.conversations.reduce((acc, conv) => acc + conv.messageCount, 0),
-            timestamp: new Date().toISOString()
-        });
-
         res.status(200).json(analytics);
     } catch (error) {
-        logError('Error Generating Analytics', {
-            error: error.message,
-            stack: error.stack,
-            timestamp: new Date()
-        });
-        
+        logError('Error generando analytics:', error);
         res.status(500).json({
-            error: 'Internal Server Error',
-            message: error.message,
-            timestamp: new Date()
+            error: 'Error generating analytics',
+            message: error.message
         });
     }
 };
@@ -372,23 +369,17 @@ exports.getConversationAnalytics = async (req, res) => {
 exports.handleHeartbeat = async (req, res) => {
     try {
         const { conversationId } = req.body;
-        
         if (!conversationId) {
             throw new Error('ConversationId is required');
         }
 
-        conversationService.updateConversationHeartbeat(conversationId);
-        
+        await conversationService.updateConversationHeartbeat(conversationId);
         res.status(200).json({
             status: 'success',
             timestamp: new Date()
         });
     } catch (error) {
-        logError('Heartbeat Error', {
-            error: error.message,
-            stack: error.stack
-        });
-        
+        logError('Error en heartbeat:', error);
         res.status(400).json({
             error: 'Heartbeat failed',
             message: error.message
