@@ -4,40 +4,23 @@ const router = express.Router();
 const webhookController = require('../controllers/webhookController');
 const { logError } = require('../utils/logger');
 
-// Middleware de manejo de errores específico para webhook
-const handleWebhookError = (fn) => async (req, res, next) => {
+// Middleware para manejar errores de webhook
+const handleWebhookAsync = (fn) => async (req, res, next) => {
     try {
         await fn(req, res, next);
     } catch (error) {
-        logError('Error in webhook route', {
-            path: req.path,
-            method: req.method,
-            error: error.message
+        logError('Error in webhook handler', { 
+            path: req.path, 
+            error: error.message 
         });
-
-        // Para webhooks de WhatsApp, siempre respondemos 200
-        if (req.path === '/') {
-            return res.status(200).send('EVENT_RECEIVED');
-        }
-        
-        // Para otras rutas, respondemos con el error apropiado
-        res.status(500).json({
-            error: 'Webhook processing error',
-            message: error.message
-        });
+        return res.status(200).send('EVENT_RECEIVED');
     }
 };
 
-// Ruta de verificación del webhook
-router.get('/', handleWebhookError(webhookController.verifyWebhook));
-
-// Ruta para recibir mensajes entrantes
-router.post('/', handleWebhookError(webhookController.receiveMessage));
-
-// Ruta para obtener todas las conversaciones
-router.get('/conversations', handleWebhookError(webhookController.getConversations));
-
-// Ruta para analytics de conversaciones
-router.get('/analytics', handleWebhookError(webhookController.getConversationAnalytics));
+// Rutas principales del webhook
+router.get('/', (req, res) => webhookController.verifyWebhook(req, res));
+router.post('/', (req, res) => webhookController.receiveMessage(req, res));
+router.get('/conversations', (req, res) => webhookController.getConversations(req, res));
+router.get('/analytics', (req, res) => webhookController.getConversationAnalytics(req, res));
 
 module.exports = router;
