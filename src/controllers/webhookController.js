@@ -6,30 +6,84 @@ const { logInfo, logError } = require('../utils/logger');
 
 // Funciones auxiliares
 function validateWebhookPayload(body) {
-    return body && 
-           body.object === 'whatsapp_business_account' && 
-           Array.isArray(body.entry);
+    if (!body || !body.object || !Array.isArray(body.entry)) {
+        return false;
+    }
+    return body.object === 'whatsapp_business_account';
+}
+
+function validateMessage(message, context) {
+    if (!message || !message.id || !message.from || !message.timestamp) {
+        logError('Invalid message structure', { message });
+        return false;
+    }
+
+    if (!context || !context.metadata || !context.contacts) {
+        logError('Invalid message context', { context });
+        return false;
+    }
+
+    return true;
 }
 
 function formatMessage(message, context) {
-    return {
-        id: message.id,
-        from: message.from,
-        timestamp: new Date(parseInt(message.timestamp) * 1000).toISOString(),
-        type: message.type,
-        text: message.text?.body || '',
-        audio: message.audio?.id,
-        direction: 'inbound',
-        status: 'received',
-        profile: context.contacts?.[0],
-        metadata: {
-            displayPhoneNumber: context.metadata?.display_phone_number,
-            phoneNumberId: context.metadata?.phone_number_id
+    try {
+        // Validación detallada del mensaje
+        if (!validateMessage(message, context)) {
+            throw new Error('Invalid message structure');
         }
-    };
+
+        const formattedMessage = {
+            id: message.id,
+            from: message.from,
+            timestamp: new Date(parseInt(message.timestamp) * 1000).toISOString(),
+            type: message.type,
+            direction: 'inbound',
+            status: 'received',
+            content: {}, // Inicializar contenido vacío
+            profile: context.contacts[0],
+            metadata: {
+                displayPhoneNumber: context.metadata.display_phone_number,
+                phoneNumberId: context.metadata.phone_number_id
+            }
+        };
+
+        // Agregar contenido según el tipo de mensaje
+        switch (message.type) {
+            case 'text':
+                if (!message.text?.body) {
+                    throw new Error('Invalid text message structure');
+                }
+                formattedMessage.content = {
+                    text: message.text.body
+                };
+                break;
+            case 'audio':
+                if (!message.audio?.id) {
+                    throw new Error('Invalid audio message structure');
+                }
+                formattedMessage.content = {
+                    audioId: message.audio.id
+                };
+                break;
+            default:
+                formattedMessage.content = {
+                    type: message.type,
+                    raw: message
+                };
+        }
+
+        return formattedMessage;
+    } catch (error) {
+        logError('Error formatting message', {
+            error: error.message,
+            message,
+            context
+        });
+        throw error;
+    }
 }
 
-// Controlador
 const webhookController = {
     async verifyWebhook(req, res) {
         const mode = req.query['hub.mode'];
@@ -60,16 +114,7 @@ const webhookController = {
                 throw new Error('Invalid webhook payload structure');
             }
 
-            for (const entry of req.body.entry) {
-                if (entry.changes) {
-                    for (const change of entry.changes) {
-                        if (change.value?.messages) {
-                            await this._processMessages(change.value.messages, change.value);
-                        }
-                    }
-                }
-            }
-
+            const results = await this._processEntries(req.body.entry);
             return res.status(200).send('EVENT_RECEIVED');
         } catch (error) {
             logError('Error processing webhook', { error: error.message });
@@ -77,39 +122,74 @@ const webhookController = {
         }
     },
 
-    async _processMessages(messages, context) {
+    async _processEntries(entries) {
+        const results = {
+            processed: 0,
+            errors: 0,
+            details: []
+        };
+
+        for (const entry of entries) {
+            if (!entry.changes) continue;
+
+            for (const change of entry.changes) {
+                if (change.value?.messages) {
+                    await this._processMessages(change.value.messages, change.value, results);
+                }
+            }
+        }
+
+        return results;
+    },
+
+    async _processMessages(messages, context, results) {
         for (const message of messages) {
             try {
-                const formattedMessage = formatMessage(message, context);
-                
                 logInfo('Processing message', {
                     messageId: message.id,
                     type: message.type,
                     from: message.from
                 });
 
+                const formattedMessage = formatMessage(message, context);
                 const conversation = await conversationService.processIncomingMessage(formattedMessage);
 
+                // Marcar como leído si es texto
                 if (message.type === 'text') {
                     try {
                         await whatsappService.markAsRead(message.id);
                         logInfo('Message marked as read', { messageId: message.id });
                     } catch (error) {
-                        logError('Error marking message as read', { 
-                            messageId: message.id, 
-                            error: error.message 
+                        logError('Error marking message as read', {
+                            messageId: message.id,
+                            error: error.message
                         });
                     }
                 }
 
-                // Notificar a través de WebSocket
+                // Notificar por WebSocket
                 const wsManager = WebSocketManager.getInstance();
                 if (wsManager) {
                     wsManager.broadcastConversationUpdate(conversation);
                     wsManager.broadcastConversations();
                 }
 
+                results.processed++;
+                results.details.push({
+                    id: message.id,
+                    status: 'success',
+                    type: message.type
+                });
+
             } catch (error) {
+                results.errors++;
+                results.details.push({
+                    id: message.id,
+                    status: 'error',
+                    type: message.type,
+                    error: error.message
+                });
+
                 logError('Error processing message', {
                     messageId: message.id,
                     error: error.message
