@@ -222,7 +222,10 @@ class WebSocketManager {
                 timestamp: msg.timestamp,
                 type: msg.type,
                 direction: msg.direction,
-                content: msg.content,
+                // Asegurar que content sea un string
+                content: typeof msg.content === 'object' ? 
+                    msg.content.body || JSON.stringify(msg.content) : 
+                    msg.content,
                 status: msg.status
             })),
             startTime: conversation.startTime,

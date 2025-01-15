@@ -63,18 +63,19 @@ const MessageProcessor = {
                 from: messageData.from
             });
 
-            // Formatear el mensaje antes de procesarlo
+           // Modificar el formateo del mensaje
             const formattedMessage = {
-                id: messageData.id,
-                from: messageData.from,
-                timestamp: new Date(parseInt(messageData.timestamp) * 1000).toISOString(),
-                type: messageData.type,
-                text: messageData.text?.body,
-                audio: messageData.audio?.id,
-                direction: 'inbound',
-                status: 'received',
-                profile: messageData.profile,
-                metadata: messageData.metadata
+            id: messageData.id,
+            from: messageData.from,
+            timestamp: new Date(parseInt(messageData.timestamp) * 1000).toISOString(),
+            type: messageData.type,
+            // Extraer directamente el texto del body
+            text: messageData.text?.body || '',  // Cambio aquí
+            audio: messageData.audio?.id,
+            direction: 'inbound',
+            status: 'received',
+            profile: messageData.profile,
+            metadata: messageData.metadata
             };
 
             const conversation = await conversationService.processIncomingMessage(messageData);

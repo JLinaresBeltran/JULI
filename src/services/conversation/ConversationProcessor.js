@@ -37,10 +37,11 @@ class ConversationProcessor {
 
     static async processTextMessage(message, conversation) {
         try {
-            // Mock del envío a Chatbase para pruebas
             logInfo('Procesando mensaje de texto', {
                 messageId: message.id,
-                content: message.text?.body
+                // Extraer directamente el texto
+                content: typeof message.text === 'object' ? 
+                    message.text.body : message.text
             });
             return true;
         } catch (error) {
