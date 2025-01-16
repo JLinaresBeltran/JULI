@@ -195,42 +195,75 @@ const webhookController = {
     async _processStatuses(statuses, context, results) {
         for (const status of statuses) {
             try {
-                // Detectar inicio de conversación o apertura de chat
+                // Mejorar la detección de primera interacción
                 if ((status.status === 'sent' || status.status === 'delivered') && 
                     status.conversation?.origin?.type === 'user_initiated') {
                     
                     const userId = status.recipient_id;
+                    
+                    // Agregar log para debuggear
+                    logInfo('Verificando status de conversación', {
+                        userId,
+                        statusType: status.status,
+                        originType: status.conversation?.origin?.type,
+                        hasContacts: !!context.contacts,
+                        contactName: context.contacts?.[0]?.profile?.name
+                    });
+                    
                     const existingConversation = await conversationService.getConversation(userId);
-
+                    
                     if (!existingConversation) {
-                        logInfo('New conversation detected from status', { 
+                        logInfo('Nueva conversación detectada desde status', { 
                             userId,
                             statusType: status.status,
                             origin: status.conversation.origin.type
                         });
-
-                        await welcomeHandlerService.handleInitialInteraction(
-                            userId,
-                            context.contacts?.[0]?.profile?.name || 'Usuario'
-                        );
-
-                        // Crear la conversación inicial
-                        await conversationService.createConversation(userId, {
-                            status: 'active',
-                            origin: 'user_initiated',
-                            startTime: new Date().toISOString()
-                        });
+    
+                        // Asegurarnos de tener la información del contacto
+                        const userName = context.contacts?.[0]?.profile?.name || 'Usuario';
+                        
+                        try {
+                            // Enviar mensaje de bienvenida inmediatamente
+                            await welcomeHandlerService.handleInitialInteraction(
+                                userId,
+                                userName
+                            );
+                            
+                            logInfo('Mensaje de bienvenida enviado exitosamente', {
+                                userId,
+                                userName
+                            });
+                            
+                            // Crear la conversación después
+                            const conversation = await conversationService.createConversation(
+                                userId, 
+                                userId
+                            );
+                            
+                            logInfo('Conversación creada exitosamente', {
+                                conversationId: conversation?.whatsappId
+                            });
+                        } catch (innerError) {
+                            logError('Error en el proceso de bienvenida', {
+                                error: innerError.message,
+                                userId,
+                                userName: context.contacts?.[0]?.profile?.name,
+                                stack: innerError.stack
+                            });
+                            throw innerError;
+                        }
                     }
                 }
-
+    
                 results.processed++;
                 results.details.push({
                     id: status.id,
                     status: 'success',
                     type: 'status',
-                    statusValue: status.status
+                    statusValue: status.status,
+                    isFirstInteraction: status.conversation?.origin?.type === 'user_initiated'
                 });
-
+    
             } catch (error) {
                 results.errors++;
                 results.details.push({
@@ -242,7 +275,12 @@ const webhookController = {
                 logError('Error processing status', {
                     statusId: status.id,
                     error: error.message,
-                    stack: error.stack
+                    stack: error.stack,
+                    context: {
+                        userId: status.recipient_id,
+                        statusType: status.status,
+                        originType: status.conversation?.origin?.type
+                    }
                 });
             }
         }

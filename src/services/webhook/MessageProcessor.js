@@ -31,25 +31,25 @@ class MessageProcessor {
                 type: message.type,
                 from: message.from
             });
-
+    
             // 1. Verificar si es primera interacción
             const conversation = await this.conversationService.getConversation(message.from);
             const isFirstInteraction = !conversation;
-
+    
             // 2. Si es primera interacción, enviar mensaje de bienvenida
             if (isFirstInteraction) {
                 logInfo('First interaction detected, sending welcome message', {
                     userId: message.from,
                     userName: context.contacts?.[0]?.profile?.name
                 });
-
-                // Enviar mensaje de bienvenida antes de crear la conversación
+    
+                // Enviar mensaje de bienvenida
                 await welcomeHandlerService.handleInitialInteraction(
                     message.from,
                     context.contacts?.[0]?.profile?.name || 'Usuario'
                 );
-
-                // Crear la conversación después del mensaje de bienvenida
+    
+                // Crear la conversación
                 await this.conversationService.createConversation(
                     message.from,
                     message.from

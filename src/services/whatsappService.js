@@ -83,6 +83,49 @@ class WhatsAppService {
         }, phoneNumberId);
     }
 
+    async sendWelcomeMessage(to, userName, phoneNumberId = null) {
+        try {
+            logInfo('Sending welcome message', {
+                to,
+                userName,
+                phoneNumberId: phoneNumberId || this.phoneNumberId
+            });
+
+            const welcomeMessage = {
+                type: 'text',
+                text: {
+                    body: `¡Hola ${userName}! 👋\n\n` +
+                          `Soy JULI, tu asistente legal virtual personalizada ✨\n\n` +
+                          `Me especializo en brindarte orientación sobre:\n` +
+                          `🏠 Servicios públicos\n` +
+                          `📱 Telecomunicaciones\n` +
+                          `✈️ Transporte aéreo\n\n` +
+                          `Cuéntame con detalle tu situación para poder ayudarte de la mejor manera posible. 💪`
+                },
+                preview_url: false
+            };
+
+            const response = await this.sendMessage(to, welcomeMessage, phoneNumberId);
+
+            logInfo('Welcome message sent successfully', {
+                to,
+                userName,
+                messageId: response.messages?.[0]?.id
+            });
+
+            return response;
+        } catch (error) {
+            logError('Failed to send welcome message', {
+                error: error.message,
+                to,
+                userName,
+                phoneNumberId: phoneNumberId || this.phoneNumberId,
+                stack: error.stack
+            });
+            throw error;
+        }
+    }
+
     async markAsRead(messageId, receivedPhoneNumberId = null) {
         try {
             // Si el ID del teléfono recibido es diferente del configurado, loggearlo
