@@ -170,25 +170,25 @@ const webhookController = {
             errors: 0,
             details: []
         };
-
+    
         for (const entry of entries) {
             if (!entry.changes) {
                 logInfo('Entry has no changes', { entryId: entry.id });
                 continue;
             }
-
+    
             for (const change of entry.changes) {
-                // Procesar mensajes si existen
-                if (change.value?.messages) {
-                    await this._processMessages(change.value.messages, change.value, results);
-                }
-                // Procesar eventos de estado después
+                // Procesar estados primero para manejar la apertura del chat
                 if (change.value?.statuses) {
                     await this._processStatuses(change.value.statuses, change.value, results);
                 }
+                // Luego procesar mensajes si existen
+                if (change.value?.messages) {
+                    await this._processMessages(change.value.messages, change.value, results);
+                }
             }
         }
-
+    
         return results;
     },
 
@@ -306,22 +306,71 @@ const webhookController = {
     async _processStatuses(statuses, context, results) {
         for (const status of statuses) {
             try {
-                // Solo procesamos estados específicos
-                if (['sent', 'delivered', 'read'].includes(status.status)) {
-                    logInfo('Processing message status', {
-                        statusId: status.id,
-                        status: status.status,
-                        recipientId: status.recipient_id
-                    });
-
-                    results.processed++;
-                    results.details.push({
-                        id: status.id,
-                        status: 'success',
-                        type: 'status',
-                        statusValue: status.status
-                    });
+                logInfo('Processing status event', {
+                    statusId: status.id,
+                    status: status.status,
+                    recipientId: status.recipient_id,
+                    conversationType: status.conversation?.origin?.type
+                });
+    
+                // Detectar apertura de chat
+                if (status.status === 'sent' && 
+                    status.conversation?.origin?.type === 'user_initiated') {
+                    
+                    const userId = status.recipient_id;
+                    const existingConversation = await conversationService.getConversation(userId);
+    
+                    // Si no existe conversación y es inicio de chat
+                    if (!existingConversation) {
+                        logInfo('New chat opened, initiating welcome flow', {
+                            userId,
+                            conversationId: status.conversation?.id
+                        });
+    
+                        try {
+                            // Enviar mensaje de bienvenida inmediatamente
+                            await welcomeHandlerService.handleInitialInteraction(
+                                userId,
+                                context.contacts?.[0]?.profile?.name || 'Usuario'
+                            );
+    
+                            // Crear la conversación
+                            const conversation = await conversationService.createConversation(
+                                userId,
+                                userId
+                            );
+    
+                            logInfo('Welcome flow completed for new chat', {
+                                userId,
+                                conversationId: conversation.whatsappId
+                            });
+    
+                            // Notificar por WebSocket si es necesario
+                            const wsManager = WebSocketManager.getInstance();
+                            if (wsManager) {
+                                wsManager.broadcastConversationUpdate(conversation);
+                                wsManager.broadcastConversations();
+                            }
+                        } catch (error) {
+                            logError('Error in welcome flow for new chat', {
+                                error: error.message,
+                                userId,
+                                stack: error.stack
+                            });
+                            throw error;
+                        }
+                    }
                 }
+    
+                results.processed++;
+                results.details.push({
+                    id: status.id,
+                    status: 'success',
+                    type: 'status',
+                    statusValue: status.status,
+                    isNewChat: status.conversation?.origin?.type === 'user_initiated'
+                });
+    
             } catch (error) {
                 results.errors++;
                 results.details.push({
@@ -334,7 +383,12 @@ const webhookController = {
                 logError('Error processing status', {
                     statusId: status.id,
                     error: error.message,
-                    stack: error.stack
+                    stack: error.stack,
+                    context: {
+                        userId: status.recipient_id,
+                        statusType: status.status,
+                        originType: status.conversation?.origin?.type
+                    }
                 });
             }
         }
