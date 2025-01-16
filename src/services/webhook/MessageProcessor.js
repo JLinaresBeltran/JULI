@@ -8,32 +8,44 @@ class MessageProcessor {
         this.wsManager = wsManager;
     }
 
+    async getConversation(userId) {
+        return await this.conversationService.getConversation(userId);
+    }
+
     async processMessage(messageData, context) {
         try {
-            logInfo('Processing message', { messageId: messageData.id });
+            logInfo('Processing message', { 
+                messageId: messageData.id,
+                type: messageData.type,
+                from: messageData.from
+            });
 
-            // 1. Formatear el mensaje
-            const formattedMessage = MessageFormatter.format(messageData);
-            
-            // 2. Verificar si es una nueva conversación
+            // 1. Verificar si es una nueva conversación ANTES de cualquier procesamiento
             const existingConversation = await this.conversationService.getConversation(messageData.from);
-            if (!existingConversation) {
-                logInfo('Sending welcome message for new conversation', { 
+            const isFirstInteraction = !existingConversation;
+
+            // 2. Si es primera interacción, enviar mensaje de bienvenida
+            if (isFirstInteraction) {
+                logInfo('First interaction detected, sending welcome message', { 
                     userId: messageData.from,
                     userName: context.contacts?.[0]?.profile?.name || 'Usuario'
                 });
 
-                // Enviar mensaje de bienvenida antes de procesar el mensaje
                 await welcomeHandlerService.handleInitialInteraction(
                     messageData.from,
                     context.contacts?.[0]?.profile?.name || 'Usuario'
                 );
             }
 
-            // 3. Procesar el mensaje en la conversación
+            // 3. Formatear y procesar el mensaje
+            const formattedMessage = MessageFormatter.format(messageData);
             const conversation = await this.conversationService.processIncomingMessage(formattedMessage);
             
-            // 4. Si aún no hay tipo de servicio definido y es un mensaje de texto
+            // 4. Marcar como leído y notificar
+            await this._handleReadReceipt(messageData);
+            this._notifyWebSocket(conversation);
+            
+            // 5. Si aún no hay tipo de servicio definido y es un mensaje de texto
             if (conversation && !conversation.serviceType && messageData.type === 'text') {
                 logInfo('Routing service for message', { 
                     userId: messageData.from,
@@ -46,11 +58,10 @@ class MessageProcessor {
                 );
             }
 
-            // 5. Manejar marcado de lectura y notificaciones
-            await this._handleReadReceipt(messageData);
-            this._notifyWebSocket(conversation);
-            
-            return conversation;
+            return {
+                conversation,
+                isFirstInteraction
+            };
 
         } catch (error) {
             logError('Message processing failed', {
