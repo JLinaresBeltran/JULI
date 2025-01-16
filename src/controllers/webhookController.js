@@ -206,47 +206,42 @@ const webhookController = {
     async _processStatuses(statuses, context, results) {
         for (const status of statuses) {
             try {
-                // Log detallado del estado
-                console.log('📊 Status Details:', {
+                console.log('📊 Processing status:', {
                     id: status.id,
                     status: status.status,
-                    timestamp: status.timestamp,
-                    recipientId: status.recipient_id,
-                    conversationType: status.conversation?.origin?.type,
-                    pricing: status.pricing?.category,
-                    hasExpiration: !!status.conversation?.expiration_timestamp,
-                    origin: status.conversation?.origin
+                    origin: status.conversation?.origin,
+                    recipientId: status.recipient_id
                 });
-
-                // Detectar nuevo chat o apertura de conversación
-                const isNewChat = this._isNewChatOpening(status);
-                console.log('🔍 New Chat Detection:', {
-                    isNewChat,
-                    statusId: status.id,
-                    conditions: this._getNewChatConditions(status)
-                });
-
-                if (isNewChat) {
-                    const userId = status.recipient_id;
-                    const existingConversation = await conversationService.getConversation(userId);
-
-                    if (!existingConversation) {
-                        console.log('🆕 Starting new chat flow for:', userId);
-                        await this._handleNewChatSession(userId, context);
+    
+                // Detectar nuevo chat
+                if (this._isNewChatOpening(status)) {
+                    console.log('🆕 New chat detected:', {
+                        userId: status.recipient_id,
+                        conversationId: status.conversation?.id
+                    });
+    
+                    try {
+                        await this._handleNewChatSession(status.recipient_id, context);
+                    } catch (error) {
+                        console.error('❌ Failed to handle new chat:', error);
+                        throw error;
                     }
                 }
-
+    
+                // Actualizar resultados
                 results.processed++;
                 results.details.push({
                     id: status.id,
                     status: 'success',
                     type: 'status',
-                    statusValue: status.status,
-                    isNewChat
+                    statusValue: status.status
                 });
-
+    
             } catch (error) {
-                console.error('❌ Error processing status:', error);
+                console.error('❌ Status processing error:', {
+                    statusId: status.id,
+                    error: error.message
+                });
                 results.errors++;
                 results.details.push({
                     id: status.id,
@@ -260,56 +255,82 @@ const webhookController = {
 
     _isNewChatOpening(status) {
         const conditions = this._getNewChatConditions(status);
-        return Object.values(conditions).some(condition => condition === true);
+        console.log('🔄 Checking chat status:', {
+            id: status.id,
+            conditions,
+            timestamp: status.timestamp
+        });
+    
+        // Nueva lógica para detectar chat apertura
+        return (
+            conditions.hasNewConversation &&
+            conditions.hasFirstTimestamp &&
+            (conditions.isServiceOrigin || conditions.isMessageDelivered)
+        );
     },
 
     _getNewChatConditions(status) {
-        return {
-            isUserInitiated: status.conversation?.origin?.type === 'user_initiated',
-            isNewConversation: !status.conversation?.expiration_timestamp && status.status === 'sent',
-            isPricingUserInitiated: status.pricing?.category === 'user_initiated',
-            isFirstDelivery: status.status === 'sent' && !status.conversation?.expiration_timestamp,
-            isServiceMessage: status.conversation?.origin?.type === 'service' && status.status === 'sent'
+        // El objeto para almacenar todas las condiciones que podrían indicar un nuevo chat
+        const conditions = {
+            hasNewConversation: !!status.conversation?.id,
+            conversationOrigin: status.conversation?.origin?.type,
+            hasFirstTimestamp: !status.conversation?.expiration_timestamp,
+            isMessageRead: status.status === 'read',
+            isMessageDelivered: status.status === 'delivered',
+            isServiceOrigin: status.conversation?.origin?.type === 'service',
+            isPricingService: status.pricing?.category === 'service',
         };
+    
+        console.log('🔍 New Chat Conditions:', conditions);
+        return conditions;
     },
 
     async _handleNewChatSession(userId, context) {
         try {
             const userName = context.contacts?.[0]?.profile?.name || 'Usuario';
-            console.log('👋 Starting welcome flow for:', { userId, userName });
-
-            // 1. Enviar mensaje de bienvenida
+            console.log('👋 Starting welcome flow:', { userId, userName });
+    
+            // 1. Verificar si ya existe la conversación
+            const existingChat = await conversationService.getConversation(userId);
+            if (existingChat) {
+                console.log('📝 Chat already exists:', existingChat.whatsappId);
+                return existingChat;
+            }
+    
+            // 2. Enviar mensaje de bienvenida
+            console.log('💌 Sending welcome message...');
             const welcomeResult = await welcomeHandlerService.handleInitialInteraction(
                 userId,
                 userName
             );
-
-            console.log('✉️ Welcome message sent:', {
-                userId,
+    
+            console.log('✅ Welcome message status:', {
+                success: !!welcomeResult,
                 messageId: welcomeResult?.messages?.[0]?.id
             });
-
-            // 2. Crear la conversación
+    
+            // 3. Crear la conversación
             const conversation = await conversationService.createConversation(
                 userId,
                 userId
             );
-
-            console.log('💬 Conversation created:', {
-                conversationId: conversation.whatsappId
-            });
-
-            // 3. Notificar por WebSocket
+    
+            // 4. Notificar por WebSocket
             const wsManager = WebSocketManager.getInstance();
             if (wsManager) {
                 wsManager.broadcastConversationUpdate(conversation);
                 wsManager.broadcastConversations();
                 console.log('🔄 WebSocket notifications sent');
             }
-
+    
             return conversation;
+    
         } catch (error) {
-            console.error('❌ Error in new chat session:', error);
+            console.error('❌ Error in new chat flow:', {
+                error: error.message,
+                userId,
+                stack: error.stack
+            });
             throw error;
         }
     },
