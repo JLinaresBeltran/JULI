@@ -1,6 +1,6 @@
-// src/controllers/webhookController.js
 const conversationService = require('../services/conversationService');
 const whatsappService = require('../services/whatsappService');
+const welcomeHandlerService = require('../services/welcomeHandlerService');
 const WebSocketManager = require('../services/websocketService');
 const { logInfo, logError } = require('../utils/logger');
 
@@ -105,7 +105,6 @@ function formatMessage(message, context) {
     }
 }
 
-// Nueva función para detectar saludos
 function isGreeting(text) {
     const greetings = [
         'hola',
@@ -197,9 +196,24 @@ const webhookController = {
                     from: message.from
                 });
 
+                // Verificar si es primera interacción antes de formatear el mensaje
+                const existingConversation = await conversationService.getConversation(message.from);
+                const isFirstInteraction = !existingConversation;
+
+                // Si es primera interacción, enviar mensaje de bienvenida
+                if (isFirstInteraction) {
+                    logInfo('Sending welcome message for new user', {
+                        userId: message.from,
+                        userName: context.contacts?.[0]?.profile?.name
+                    });
+
+                    await welcomeHandlerService.handleInitialInteraction(
+                        message.from,
+                        context.contacts?.[0]?.profile?.name || 'Usuario'
+                    );
+                }
+
                 const formattedMessage = formatMessage(message, context);
-                
-                // Procesar el mensaje a través del servicio de conversación
                 const conversation = await conversationService.processIncomingMessage(formattedMessage);
 
                 // Marcar como leído si es texto
@@ -230,7 +244,8 @@ const webhookController = {
                     id: message.id,
                     status: 'success',
                     type: message.type,
-                    isGreeting: message.type === 'text' ? isGreeting(message.text.body) : false
+                    isGreeting: message.type === 'text' ? isGreeting(message.text.body) : false,
+                    isFirstInteraction
                 });
 
             } catch (error) {
