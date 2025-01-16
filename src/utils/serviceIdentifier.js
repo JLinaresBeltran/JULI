@@ -1,15 +1,20 @@
+const { logInfo } = require('./logger');
+
 const SERVICE_KEYWORDS = {
     SERVICIOS_PUBLICOS: [
         'agua', 'luz', 'electricidad', 'gas', 'alcantarillado',
-        'basura', 'factura', 'corte', 'reconexión', 'medidor'
+        'basura', 'factura', 'corte', 'reconexión', 'medidor',
+        'servicios públicos', 'recibo', 'consumo'
     ],
     TELECOMUNICACIONES: [
         'internet', 'teléfono', 'celular', 'móvil', 'señal',
-        'plan', 'datos', 'fibra', 'cable', 'wifi', 'línea'
+        'plan', 'datos', 'fibra', 'cable', 'wifi', 'línea',
+        'telefonía', 'comunicaciones', 'banda ancha'
     ],
     TRANSPORTE_AEREO: [
         'vuelo', 'avión', 'aerolínea', 'equipaje', 'maleta',
-        'boleto', 'pasaje', 'reserva', 'cancelación', 'retraso'
+        'boleto', 'pasaje', 'reserva', 'cancelación', 'retraso',
+        'aeropuerto', 'viaje', 'tiquete'
     ]
 };
 
@@ -25,7 +30,7 @@ async function identifyServiceType(message) {
 
     for (const [service, keywords] of Object.entries(SERVICE_KEYWORDS)) {
         matches[service] = keywords.filter(keyword => 
-            normalizedMessage.includes(keyword)
+            normalizedMessage.includes(keyword.toLowerCase())
         ).length;
     }
 
@@ -33,12 +38,20 @@ async function identifyServiceType(message) {
     const [serviceType] = Object.entries(matches)
         .sort(([,a], [,b]) => b - a)[0];
 
-    // Si no hay coincidencias claras, retornar null
-    if (matches[serviceType] === 0) {
-        return null;
+    // Si hay coincidencias, registrar el resultado
+    if (matches[serviceType] > 0) {
+        logInfo('Service type identified', {
+            message: normalizedMessage,
+            serviceType,
+            matchCount: matches[serviceType]
+        });
+        return serviceType;
     }
 
-    return serviceType;
+    logInfo('No service type identified', {
+        message: normalizedMessage
+    });
+    return null;
 }
 
 module.exports = {

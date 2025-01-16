@@ -1,11 +1,40 @@
-const { ConversationManager } = require('./conversation');
-const { identifyServiceType } = require('../utils/serviceIdentifier');
-const chatbaseClient = require('../integrations/chatbaseClient');
-const logger = require('../utils/logger');
+const { logInfo, logError } = require('../utils/logger');
+const whatsappService = require('./whatsappService');
+const serviceIdentifier = require('../utils/serviceIdentifier');
 
 class WelcomeHandlerService {
     constructor() {
-        this.conversationManager = new ConversationManager();
+        this.greetings = [
+            'hola',
+            'buenos días',
+            'buen día',
+            'buenas',
+            'buenas tardes',
+            'buenas noches',
+            'hi',
+            'hello'
+        ];
+    }
+
+    async handleInitialInteraction(userId, userName) {
+        try {
+            const welcomeMessage = this.getWelcomeMessage(userName);
+            await whatsappService.sendTextMessage(userId, welcomeMessage);
+            
+            logInfo('Welcome message sent', {
+                userId,
+                userName
+            });
+
+            return welcomeMessage;
+        } catch (error) {
+            logError('Error sending welcome message', {
+                error: error.message,
+                userId,
+                userName
+            });
+            throw error;
+        }
     }
 
     getWelcomeMessage(userName) {
@@ -21,36 +50,44 @@ Me especializo en brindarte orientación sobre:
 Cuéntame con detalle tu situación para poder ayudarte de la mejor manera posible. 💪`;
     }
 
-    async handleInitialInteraction(userId, userName) {
-        try {
-            // Registrar nueva conversación
-            await this.conversationManager.initializeConversation(userId);
-            
-            // Enviar mensaje de bienvenida
-            return this.getWelcomeMessage(userName);
-        } catch (error) {
-            logger.error('Error en handleInitialInteraction:', error);
-            throw error;
-        }
+    isGreeting(text) {
+        return text && this.greetings.some(greeting => 
+            text.toLowerCase().trim().includes(greeting.toLowerCase())
+        );
     }
 
     async routeToService(userId, message) {
         try {
-            // Identificar tipo de servicio basado en el mensaje
-            const serviceType = await identifyServiceType(message);
-            
-            // Obtener la instancia de chatbase correspondiente
-            const chatbot = await chatbaseClient.getChatbotForService(serviceType);
-            
-            // Actualizar el estado de la conversación
-            await this.conversationManager.updateConversationService(userId, serviceType);
-            
-            // Procesar el mensaje con el chatbot correspondiente
-            return await chatbot.processMessage(message);
+            const serviceType = await serviceIdentifier.identifyServiceType(message);
+            if (!serviceType) {
+                const response = `Por favor, cuéntame más detalles sobre tu caso. 
+                ¿Se trata de servicios públicos (agua, luz, gas), telecomunicaciones (teléfono, internet) o transporte aéreo?`;
+                await whatsappService.sendTextMessage(userId, response);
+                return response;
+            }
+
+            const serviceResponse = this._getServiceSpecificResponse(serviceType);
+            await whatsappService.sendTextMessage(userId, serviceResponse);
+            return serviceResponse;
+
         } catch (error) {
-            logger.error('Error en routeToService:', error);
+            logError('Error routing service', {
+                error: error.message,
+                userId,
+                message
+            });
             throw error;
         }
+    }
+
+    _getServiceSpecificResponse(serviceType) {
+        const responses = {
+            SERVICIOS_PUBLICOS: 'Entiendo que tu consulta es sobre servicios públicos. Para ayudarte mejor, ¿podrías especificar si es sobre agua, luz, gas u otro servicio? 🏠',
+            TELECOMUNICACIONES: 'Veo que tu consulta es sobre telecomunicaciones. ¿Es sobre telefonía móvil, internet, televisión u otro servicio? 📱',
+            TRANSPORTE_AEREO: 'Comprendo que tu consulta es sobre transporte aéreo. ¿Es sobre un vuelo, equipaje, cancelación u otro tema? ✈️'
+        };
+
+        return responses[serviceType] || 'Por favor, proporciona más detalles sobre tu caso.';
     }
 }
 
