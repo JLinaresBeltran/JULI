@@ -58,11 +58,6 @@ function validateMessage(message, context) {
 
 function formatMessage(message, context) {
     try {
-        // Validación detallada del mensaje
-        if (!validateMessage(message, context)) {
-            throw new Error('Invalid message structure');
-        }
-
         const formattedMessage = {
             id: message.id,
             from: message.from,
@@ -70,7 +65,6 @@ function formatMessage(message, context) {
             type: message.type,
             direction: 'inbound',
             status: 'received',
-            content: {},
             profile: context.contacts[0],
             metadata: {
                 displayPhoneNumber: context.metadata.display_phone_number,
@@ -78,17 +72,17 @@ function formatMessage(message, context) {
             }
         };
 
-        // Procesamiento mejorado según tipo de mensaje
+        // Mantener la estructura original del mensaje
         switch (message.type) {
             case 'text':
-                formattedMessage.content = {
-                    text: message.text.body,
-                    isGreeting: isGreeting(message.text.body)
+                formattedMessage.text = {
+                    body: message.text.body
                 };
+                formattedMessage.isGreeting = isGreeting(message.text.body);
                 break;
             case 'audio':
-                formattedMessage.content = {
-                    audioId: message.audio.id,
+                formattedMessage.audio = {
+                    id: message.audio.id,
                     mimeType: message.audio.mime_type,
                     voice: message.audio.voice || false
                 };
@@ -99,11 +93,6 @@ function formatMessage(message, context) {
                     raw: message
                 };
         }
-
-        logInfo('Message formatted successfully', {
-            messageId: message.id,
-            type: message.type
-        });
 
         return formattedMessage;
     } catch (error) {
