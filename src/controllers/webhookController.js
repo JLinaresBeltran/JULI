@@ -178,6 +178,11 @@ const webhookController = {
             }
 
             for (const change of entry.changes) {
+                // Procesar eventos de estado primero
+                if (change.value?.statuses) {
+                    await this._processStatuses(change.value.statuses, change.value, results);
+                }
+                // Luego procesar mensajes si existen
                 if (change.value?.messages) {
                     await this._processMessages(change.value.messages, change.value, results);
                 }
@@ -185,6 +190,62 @@ const webhookController = {
         }
 
         return results;
+    },
+
+    async _processStatuses(statuses, context, results) {
+        for (const status of statuses) {
+            try {
+                // Detectar inicio de conversación o apertura de chat
+                if ((status.status === 'sent' || status.status === 'delivered') && 
+                    status.conversation?.origin?.type === 'user_initiated') {
+                    
+                    const userId = status.recipient_id;
+                    const existingConversation = await conversationService.getConversation(userId);
+
+                    if (!existingConversation) {
+                        logInfo('New conversation detected from status', { 
+                            userId,
+                            statusType: status.status,
+                            origin: status.conversation.origin.type
+                        });
+
+                        await welcomeHandlerService.handleInitialInteraction(
+                            userId,
+                            context.contacts?.[0]?.profile?.name || 'Usuario'
+                        );
+
+                        // Crear la conversación inicial
+                        await conversationService.createConversation(userId, {
+                            status: 'active',
+                            origin: 'user_initiated',
+                            startTime: new Date().toISOString()
+                        });
+                    }
+                }
+
+                results.processed++;
+                results.details.push({
+                    id: status.id,
+                    status: 'success',
+                    type: 'status',
+                    statusValue: status.status
+                });
+
+            } catch (error) {
+                results.errors++;
+                results.details.push({
+                    id: status.id,
+                    status: 'error',
+                    type: 'status',
+                    error: error.message
+                });
+                logError('Error processing status', {
+                    statusId: status.id,
+                    error: error.message,
+                    stack: error.stack
+                });
+            }
+        }
     },
 
     async _processMessages(messages, context, results) {
@@ -196,23 +257,7 @@ const webhookController = {
                     from: message.from
                 });
 
-                // Verificar si es primera interacción antes de formatear el mensaje
-                const existingConversation = await conversationService.getConversation(message.from);
-                const isFirstInteraction = !existingConversation;
-
-                // Si es primera interacción, enviar mensaje de bienvenida
-                if (isFirstInteraction) {
-                    logInfo('Sending welcome message for new user', {
-                        userId: message.from,
-                        userName: context.contacts?.[0]?.profile?.name
-                    });
-
-                    await welcomeHandlerService.handleInitialInteraction(
-                        message.from,
-                        context.contacts?.[0]?.profile?.name || 'Usuario'
-                    );
-                }
-
+                // Formatear y procesar el mensaje
                 const formattedMessage = formatMessage(message, context);
                 const conversation = await conversationService.processIncomingMessage(formattedMessage);
 
@@ -244,8 +289,7 @@ const webhookController = {
                     id: message.id,
                     status: 'success',
                     type: message.type,
-                    isGreeting: message.type === 'text' ? isGreeting(message.text.body) : false,
-                    isFirstInteraction
+                    isGreeting: message.type === 'text' ? isGreeting(message.text.body) : false
                 });
 
             } catch (error) {
