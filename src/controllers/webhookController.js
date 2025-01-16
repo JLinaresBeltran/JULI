@@ -178,112 +178,18 @@ const webhookController = {
             }
 
             for (const change of entry.changes) {
-                // Procesar eventos de estado primero
-                if (change.value?.statuses) {
-                    await this._processStatuses(change.value.statuses, change.value, results);
-                }
-                // Luego procesar mensajes si existen
+                // Procesar mensajes si existen
                 if (change.value?.messages) {
                     await this._processMessages(change.value.messages, change.value, results);
+                }
+                // Procesar eventos de estado después
+                if (change.value?.statuses) {
+                    await this._processStatuses(change.value.statuses, change.value, results);
                 }
             }
         }
 
         return results;
-    },
-
-    async _processStatuses(statuses, context, results) {
-        for (const status of statuses) {
-            try {
-                // Mejorar la detección de primera interacción
-                if ((status.status === 'sent' || status.status === 'delivered') && 
-                    status.conversation?.origin?.type === 'user_initiated') {
-                    
-                    const userId = status.recipient_id;
-                    
-                    // Agregar log para debuggear
-                    logInfo('Verificando status de conversación', {
-                        userId,
-                        statusType: status.status,
-                        originType: status.conversation?.origin?.type,
-                        hasContacts: !!context.contacts,
-                        contactName: context.contacts?.[0]?.profile?.name
-                    });
-                    
-                    const existingConversation = await conversationService.getConversation(userId);
-                    
-                    if (!existingConversation) {
-                        logInfo('Nueva conversación detectada desde status', { 
-                            userId,
-                            statusType: status.status,
-                            origin: status.conversation.origin.type
-                        });
-    
-                        // Asegurarnos de tener la información del contacto
-                        const userName = context.contacts?.[0]?.profile?.name || 'Usuario';
-                        
-                        try {
-                            // Enviar mensaje de bienvenida inmediatamente
-                            await welcomeHandlerService.handleInitialInteraction(
-                                userId,
-                                userName
-                            );
-                            
-                            logInfo('Mensaje de bienvenida enviado exitosamente', {
-                                userId,
-                                userName
-                            });
-                            
-                            // Crear la conversación después
-                            const conversation = await conversationService.createConversation(
-                                userId, 
-                                userId
-                            );
-                            
-                            logInfo('Conversación creada exitosamente', {
-                                conversationId: conversation?.whatsappId
-                            });
-                        } catch (innerError) {
-                            logError('Error en el proceso de bienvenida', {
-                                error: innerError.message,
-                                userId,
-                                userName: context.contacts?.[0]?.profile?.name,
-                                stack: innerError.stack
-                            });
-                            throw innerError;
-                        }
-                    }
-                }
-    
-                results.processed++;
-                results.details.push({
-                    id: status.id,
-                    status: 'success',
-                    type: 'status',
-                    statusValue: status.status,
-                    isFirstInteraction: status.conversation?.origin?.type === 'user_initiated'
-                });
-    
-            } catch (error) {
-                results.errors++;
-                results.details.push({
-                    id: status.id,
-                    status: 'error',
-                    type: 'status',
-                    error: error.message
-                });
-                logError('Error processing status', {
-                    statusId: status.id,
-                    error: error.message,
-                    stack: error.stack,
-                    context: {
-                        userId: status.recipient_id,
-                        statusType: status.status,
-                        originType: status.conversation?.origin?.type
-                    }
-                });
-            }
-        }
     },
 
     async _processMessages(messages, context, results) {
@@ -295,11 +201,58 @@ const webhookController = {
                     from: message.from
                 });
 
-                // Formatear y procesar el mensaje
-                const formattedMessage = formatMessage(message, context);
-                const conversation = await conversationService.processIncomingMessage(formattedMessage);
+                // 1. Verificar si existe la conversación
+                const existingConversation = await conversationService.getConversation(message.from);
+                const isFirstInteraction = !existingConversation;
 
-                // Marcar como leído si es texto
+                let conversation;
+
+                // 2. Si es primera interacción, manejar el flujo de bienvenida
+                if (isFirstInteraction) {
+                    logInfo('First interaction detected, handling welcome flow', {
+                        userId: message.from,
+                        userName: context.contacts?.[0]?.profile?.name
+                    });
+
+                    try {
+                        // Enviar mensaje de bienvenida primero
+                        await welcomeHandlerService.handleInitialInteraction(
+                            message.from,
+                            context.contacts?.[0]?.profile?.name || 'Usuario'
+                        );
+
+                        // Crear la conversación después del mensaje de bienvenida
+                        conversation = await conversationService.createConversation(
+                            message.from,
+                            message.from
+                        );
+
+                        logInfo('Welcome flow completed successfully', {
+                            userId: message.from,
+                            conversationId: conversation.whatsappId
+                        });
+                    } catch (welcomeError) {
+                        logError('Error in welcome flow', {
+                            error: welcomeError.message,
+                            userId: message.from,
+                            stack: welcomeError.stack
+                        });
+                        throw welcomeError;
+                    }
+                } else {
+                    conversation = existingConversation;
+                }
+
+                // 3. Procesar el mensaje entrante
+                const formattedMessage = formatMessage(message, context);
+                
+                // Actualizar la conversación con el nuevo mensaje
+                conversation = await conversationService.processIncomingMessage(
+                    formattedMessage,
+                    { createIfNotExists: true }
+                );
+
+                // 4. Marcar como leído si es texto
                 if (message.type === 'text') {
                     try {
                         await whatsappService.markAsRead(
@@ -315,18 +268,20 @@ const webhookController = {
                     }
                 }
 
-                // Notificar por WebSocket
+                // 5. Notificar por WebSocket
                 const wsManager = WebSocketManager.getInstance();
                 if (wsManager) {
                     wsManager.broadcastConversationUpdate(conversation);
                     wsManager.broadcastConversations();
                 }
 
+                // 6. Actualizar resultados
                 results.processed++;
                 results.details.push({
                     id: message.id,
                     status: 'success',
                     type: message.type,
+                    isFirstInteraction,
                     isGreeting: message.type === 'text' ? isGreeting(message.text.body) : false
                 });
 
@@ -341,6 +296,43 @@ const webhookController = {
 
                 logError('Error processing message', {
                     messageId: message.id,
+                    error: error.message,
+                    stack: error.stack
+                });
+            }
+        }
+    },
+
+    async _processStatuses(statuses, context, results) {
+        for (const status of statuses) {
+            try {
+                // Solo procesamos estados específicos
+                if (['sent', 'delivered', 'read'].includes(status.status)) {
+                    logInfo('Processing message status', {
+                        statusId: status.id,
+                        status: status.status,
+                        recipientId: status.recipient_id
+                    });
+
+                    results.processed++;
+                    results.details.push({
+                        id: status.id,
+                        status: 'success',
+                        type: 'status',
+                        statusValue: status.status
+                    });
+                }
+            } catch (error) {
+                results.errors++;
+                results.details.push({
+                    id: status.id,
+                    status: 'error',
+                    type: 'status',
+                    error: error.message
+                });
+                
+                logError('Error processing status', {
+                    statusId: status.id,
                     error: error.message,
                     stack: error.stack
                 });
