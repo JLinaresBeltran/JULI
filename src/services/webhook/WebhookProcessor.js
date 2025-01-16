@@ -1,4 +1,3 @@
-// src/services/webhook/WebhookProcessor.js
 class WebhookProcessor {
     constructor(messageProcessor, wsManager) {
         this.messageProcessor = messageProcessor;
@@ -28,7 +27,10 @@ class WebhookProcessor {
         
         for (const change of entry.changes) {
             if (change.value.messages) {
-                const changeResults = await this._processMessages(change.value.messages, change);
+                const changeResults = await this._processMessages(
+                    change.value.messages, 
+                    change.value
+                );
                 this._mergeResults(results, changeResults);
             }
         }
@@ -36,15 +38,23 @@ class WebhookProcessor {
         return results;
     }
 
-    async _processMessages(messages, changeContext) {
+    async _processMessages(messages, context) {
         const results = { processed: 0, errors: 0, details: [] };
 
         for (const message of messages) {
             try {
-                await this.messageProcessor.processMessage(message, changeContext);
+                await this.messageProcessor.processMessage(message, context);
                 this._addResult(results, message, 'success');
             } catch (error) {
                 this._addResult(results, message, 'error', error);
+                logError('Message processing failed', {
+                    error,
+                    messageId: message.id,
+                    context: {
+                        type: message.type,
+                        from: message.from
+                    }
+                });
             }
         }
 
