@@ -185,17 +185,28 @@ const webhookController = {
                 console.log('🔄 Processing change:', {
                     field: change.field,
                     hasMessages: !!change.value?.messages,
-                    hasStatuses: !!change.value?.statuses
+                    hasStatuses: !!change.value?.statuses,
+                    metadata: change.value?.metadata
                 });
 
-                // Procesar estados primero
-                if (change.value?.statuses) {
-                    await this._processStatuses(change.value.statuses, change.value, results);
-                }
+                // 1. Primero verificar si es un nuevo usuario
+                const isNewUser = await this._checkNewUser(change.value);
                 
-                // Luego procesar mensajes
+                // 2. Si es nuevo usuario, enviar bienvenida antes de procesar cualquier cosa
+                if (isNewUser) {
+                    const firstMessage = change.value.messages?.[0];
+                    if (firstMessage) {
+                        console.log('👋 New user detected, initiating welcome flow:', firstMessage.from);
+                        await this._handleNewUserWelcome(firstMessage.from, change.value);
+                    }
+                }
+
+                // 3. Procesar los mensajes y estados normalmente
                 if (change.value?.messages) {
                     await this._processMessages(change.value.messages, change.value, results);
+                }
+                if (change.value?.statuses) {
+                    await this._processStatuses(change.value.statuses, change.value, results);
                 }
             }
         }
@@ -203,130 +214,59 @@ const webhookController = {
         return results;
     },
 
-    async _processStatuses(statuses, context, results) {
-        for (const status of statuses) {
-            try {
-                console.log('📊 Processing status:', {
-                    id: status.id,
-                    status: status.status,
-                    origin: status.conversation?.origin,
-                    recipientId: status.recipient_id
-                });
-    
-                // Detectar nuevo chat
-                if (this._isNewChatOpening(status)) {
-                    console.log('🆕 New chat detected:', {
-                        userId: status.recipient_id,
-                        conversationId: status.conversation?.id
-                    });
-    
-                    try {
-                        await this._handleNewChatSession(status.recipient_id, context);
-                    } catch (error) {
-                        console.error('❌ Failed to handle new chat:', error);
-                        throw error;
-                    }
-                }
-    
-                // Actualizar resultados
-                results.processed++;
-                results.details.push({
-                    id: status.id,
-                    status: 'success',
-                    type: 'status',
-                    statusValue: status.status
-                });
-    
-            } catch (error) {
-                console.error('❌ Status processing error:', {
-                    statusId: status.id,
-                    error: error.message
-                });
-                results.errors++;
-                results.details.push({
-                    id: status.id,
-                    status: 'error',
-                    type: 'status',
-                    error: error.message
-                });
-            }
-        }
-    },
-
-    _isNewChatOpening(status) {
-        const conditions = this._getNewChatConditions(status);
-        console.log('🔄 Checking chat status:', {
-            id: status.id,
-            conditions,
-            timestamp: status.timestamp
+    async _checkNewUser(context) {
+        if (!context.messages?.[0]) return false;
+        
+        const userId = context.messages[0].from;
+        const existingConversation = await conversationService.getConversation(userId);
+        
+        console.log('🔍 Checking user status:', {
+            userId,
+            hasExistingConversation: !!existingConversation,
+            contacts: context.contacts?.length,
+            hasProfile: !!context.contacts?.[0]?.profile
         });
-    
-        // Nueva lógica para detectar chat apertura
-        return (
-            conditions.hasNewConversation &&
-            conditions.hasFirstTimestamp &&
-            (conditions.isServiceOrigin || conditions.isMessageDelivered)
-        );
+        
+        return !existingConversation;
     },
 
-    _getNewChatConditions(status) {
-        // El objeto para almacenar todas las condiciones que podrían indicar un nuevo chat
-        const conditions = {
-            hasNewConversation: !!status.conversation?.id,
-            conversationOrigin: status.conversation?.origin?.type,
-            hasFirstTimestamp: !status.conversation?.expiration_timestamp,
-            isMessageRead: status.status === 'read',
-            isMessageDelivered: status.status === 'delivered',
-            isServiceOrigin: status.conversation?.origin?.type === 'service',
-            isPricingService: status.pricing?.category === 'service',
-        };
-    
-        console.log('🔍 New Chat Conditions:', conditions);
-        return conditions;
-    },
-
-    async _handleNewChatSession(userId, context) {
+    async _handleNewUserWelcome(userId, context) {
         try {
+            console.log('✨ Starting welcome flow for:', userId);
             const userName = context.contacts?.[0]?.profile?.name || 'Usuario';
-            console.log('👋 Starting welcome flow:', { userId, userName });
-    
-            // 1. Verificar si ya existe la conversación
-            const existingChat = await conversationService.getConversation(userId);
-            if (existingChat) {
-                console.log('📝 Chat already exists:', existingChat.whatsappId);
-                return existingChat;
-            }
-    
-            // 2. Enviar mensaje de bienvenida
-            console.log('💌 Sending welcome message...');
+
+            // 1. Enviar mensaje de bienvenida primero
+            console.log('📬 Sending welcome message to:', userId);
             const welcomeResult = await welcomeHandlerService.handleInitialInteraction(
                 userId,
                 userName
             );
-    
-            console.log('✅ Welcome message status:', {
-                success: !!welcomeResult,
-                messageId: welcomeResult?.messages?.[0]?.id
-            });
-    
-            // 3. Crear la conversación
+
+            if (!welcomeResult?.messages?.[0]?.id) {
+                throw new Error('Failed to send welcome message');
+            }
+
+            console.log('✅ Welcome message sent:', welcomeResult.messages[0].id);
+
+            // 2. Crear la conversación
             const conversation = await conversationService.createConversation(
                 userId,
                 userId
             );
-    
-            // 4. Notificar por WebSocket
+
+            console.log('📝 Conversation created:', conversation.whatsappId);
+
+            // 3. Notificar por WebSocket
             const wsManager = WebSocketManager.getInstance();
             if (wsManager) {
                 wsManager.broadcastConversationUpdate(conversation);
                 wsManager.broadcastConversations();
                 console.log('🔄 WebSocket notifications sent');
             }
-    
+
             return conversation;
-    
         } catch (error) {
-            console.error('❌ Error in new chat flow:', {
+            console.error('❌ Error in welcome flow:', {
                 error: error.message,
                 userId,
                 stack: error.stack
@@ -341,7 +281,10 @@ const webhookController = {
                 console.log('📨 Processing message:', {
                     id: message.id,
                     type: message.type,
-                    from: message.from
+                    from: message.from,
+                    timestamp: message.timestamp,
+                    isText: message.type === 'text',
+                    content: message.type === 'text' ? message.text?.body : undefined
                 });
 
                 const formattedMessage = formatMessage(message, context);
@@ -350,12 +293,20 @@ const webhookController = {
                     { createIfNotExists: true }
                 );
 
-                // Marcar como leído si es texto
+                // Marcar como leído
                 if (message.type === 'text') {
-                    await whatsappService.markAsRead(
-                        message.id,
-                        context.metadata?.phone_number_id
-                    );
+                    try {
+                        await whatsappService.markAsRead(
+                            message.id,
+                            context.metadata?.phone_number_id
+                        );
+                        console.log('✓ Message marked as read:', message.id);
+                    } catch (markError) {
+                        console.error('❌ Error marking message as read:', {
+                            error: markError.message,
+                            messageId: message.id
+                        });
+                    }
                 }
 
                 // Notificar por WebSocket
@@ -373,12 +324,54 @@ const webhookController = {
                 });
 
             } catch (error) {
-                console.error('❌ Error processing message:', error);
+                console.error('❌ Error processing message:', {
+                    error: error.message,
+                    messageId: message.id,
+                    type: message.type
+                });
                 results.errors++;
                 results.details.push({
                     id: message.id,
                     status: 'error',
                     type: message.type,
+                    error: error.message
+                });
+            }
+        }
+    },
+
+    async _processStatuses(statuses, context, results) {
+        for (const status of statuses) {
+            try {
+                console.log('📊 Processing status:', {
+                    id: status.id,
+                    status: status.status,
+                    recipientId: status.recipient_id,
+                    timestamp: status.timestamp,
+                    conversationType: status.conversation?.origin?.type,
+                    pricing: status.pricing?.category
+                });
+
+                // Procesar el estado
+                results.processed++;
+                results.details.push({
+                    id: status.id,
+                    status: 'success',
+                    type: 'status',
+                    statusValue: status.status
+                });
+
+            } catch (error) {
+                console.error('❌ Status processing error:', {
+                    error: error.message,
+                    statusId: status.id,
+                    recipientId: status.recipient_id
+                });
+                results.errors++;
+                results.details.push({
+                    id: status.id,
+                    status: 'error',
+                    type: 'status',
                     error: error.message
                 });
             }
