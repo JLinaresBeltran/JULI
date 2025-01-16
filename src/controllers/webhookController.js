@@ -205,7 +205,10 @@ const webhookController = {
                 // Marcar como leído si es texto
                 if (message.type === 'text') {
                     try {
-                        await whatsappService.markAsRead(message.id);
+                        await whatsappService.markAsRead(
+                            message.id,
+                            context.metadata?.phone_number_id
+                        );
                         logInfo('Message marked as read', { messageId: message.id });
                     } catch (error) {
                         logError('Error marking message as read', {

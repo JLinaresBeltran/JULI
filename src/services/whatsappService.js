@@ -1,4 +1,3 @@
-// src/services/whatsappService.js
 const axios = require('axios');
 const { logInfo, logError } = require('../utils/logger');
 
@@ -15,16 +14,26 @@ class WhatsAppService {
         }
 
         logInfo('WhatsApp service initialized with:', {
-            phoneNumberId: this.phoneNumberId,
-            accountId: this.accountId,
-            hasAccessToken: !!this.accessToken
+            configuredPhoneNumberId: this.phoneNumberId,
+            configuredAccountId: this.accountId,
+            hasAccessToken: !!this.accessToken,
+            apiVersion: this.apiVersion
         });
     }
 
-    async sendMessage(to, content) {
+    async sendMessage(to, content, phoneNumberId = null) {
         try {
-            const url = `${this.baseUrl}/${this.apiVersion}/${this.phoneNumberId}/messages`;
+            // Usar el ID del teléfono recibido si está disponible
+            const usePhoneNumberId = phoneNumberId || this.phoneNumberId;
+            const url = `${this.baseUrl}/${this.apiVersion}/${usePhoneNumberId}/messages`;
             
+            logInfo('Attempting to send message', {
+                to,
+                usingPhoneNumberId: usePhoneNumberId,
+                configuredPhoneNumberId: this.phoneNumberId,
+                messageType: content.type
+            });
+
             const response = await axios.post(url, {
                 messaging_product: 'whatsapp',
                 recipient_type: 'individual',
@@ -39,7 +48,8 @@ class WhatsAppService {
 
             logInfo('Message sent successfully', {
                 to,
-                messageId: response.data.messages?.[0]?.id
+                messageId: response.data.messages?.[0]?.id,
+                phoneNumberId: usePhoneNumberId
             });
 
             return response.data;
@@ -47,20 +57,22 @@ class WhatsAppService {
             logError('Failed to send WhatsApp message', {
                 error: error.message,
                 to,
-                responseData: error.response?.data
+                phoneNumberId: phoneNumberId || this.phoneNumberId,
+                responseData: error.response?.data,
+                errorStatus: error.response?.status
             });
             throw error;
         }
     }
 
-    async sendTextMessage(to, text) {
+    async sendTextMessage(to, text, phoneNumberId = null) {
         return this.sendMessage(to, {
             type: 'text',
             text: { body: text }
-        });
+        }, phoneNumberId);
     }
 
-    async sendTemplateMessage(to, templateName, languageCode = 'es', components = []) {
+    async sendTemplateMessage(to, templateName, languageCode = 'es', components = [], phoneNumberId = null) {
         return this.sendMessage(to, {
             type: 'template',
             template: {
@@ -68,13 +80,30 @@ class WhatsAppService {
                 language: { code: languageCode },
                 components
             }
-        });
+        }, phoneNumberId);
     }
 
-    async markAsRead(messageId) {
+    async markAsRead(messageId, receivedPhoneNumberId = null) {
         try {
-            const url = `${this.baseUrl}/${this.apiVersion}/${this.phoneNumberId}/messages`;
-            
+            // Si el ID del teléfono recibido es diferente del configurado, loggearlo
+            if (receivedPhoneNumberId && receivedPhoneNumberId !== this.phoneNumberId) {
+                logInfo('Phone number ID mismatch in markAsRead', {
+                    configured: this.phoneNumberId,
+                    received: receivedPhoneNumberId,
+                    messageId
+                });
+            }
+
+            // Usar el ID del teléfono recibido si está disponible
+            const usePhoneNumberId = receivedPhoneNumberId || this.phoneNumberId;
+            const url = `${this.baseUrl}/${this.apiVersion}/${usePhoneNumberId}/messages`;
+
+            logInfo('Attempting to mark message as read', {
+                messageId,
+                usingPhoneNumberId: usePhoneNumberId,
+                configuredPhoneNumberId: this.phoneNumberId
+            });
+
             const response = await axios.post(url, {
                 messaging_product: 'whatsapp',
                 status: 'read',
@@ -86,12 +115,21 @@ class WhatsAppService {
                 }
             });
 
-            logInfo('Message marked as read', { messageId });
+            logInfo('Message marked as read successfully', { 
+                messageId,
+                phoneNumberId: usePhoneNumberId,
+                response: response.data 
+            });
+
             return response.data;
         } catch (error) {
             logError('Failed to mark message as read', {
                 error: error.message,
-                messageId
+                messageId,
+                phoneNumberId: receivedPhoneNumberId || this.phoneNumberId,
+                errorDetails: error.response?.data,
+                errorStatus: error.response?.status,
+                stack: error.stack
             });
             throw error;
         }
