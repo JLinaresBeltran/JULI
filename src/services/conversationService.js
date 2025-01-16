@@ -1,4 +1,3 @@
-// src/services/conversationService.js
 const {
     ConversationManager,
     ConversationProcessor,
@@ -78,14 +77,26 @@ class ConversationService extends ConversationEvents {
         });
     }
 
-    async processIncomingMessage(message) {
+    async processIncomingMessage(message, options = {}) {
         try {
             if (!ConversationValidator.validateMessage(message)) {
                 throw new Error('Mensaje inválido');
             }
 
-            const conversation = this.manager.get(message.from) || 
-                               this.manager.create(message.from, message.from);
+            let conversation = this.manager.get(message.from);
+            
+            // Solo crear una nueva conversación si se especifica o si ya existe
+            if (!conversation && options.createIfNotExists) {
+                conversation = this.manager.create(message.from, message.from);
+                logInfo('Nueva conversación creada', {
+                    whatsappId: message.from,
+                    context: 'processIncomingMessage'
+                });
+            }
+
+            if (!conversation) {
+                throw new Error('No existe una conversación activa');
+            }
 
             if (conversation.addMessage(message)) {
                 await ConversationProcessor.processMessage(message, conversation);
@@ -99,37 +110,181 @@ class ConversationService extends ConversationEvents {
         } catch (error) {
             logError('Error procesando mensaje entrante', {
                 error: error.message,
-                messageId: message?.id
+                messageId: message?.id,
+                stack: error.stack
+            });
+            throw error;
+        }
+    }
+
+    async createConversation(whatsappId, userPhoneNumber) {
+        try {
+            // Verificar si ya existe la conversación
+            if (this.manager.get(whatsappId)) {
+                return this.manager.get(whatsappId);
+            }
+            
+            // Crear nueva conversación
+            const conversation = this.manager.create(whatsappId, userPhoneNumber);
+            
+            logInfo('Nueva conversación creada', {
+                whatsappId,
+                userPhoneNumber,
+                context: 'createConversation'
+            });
+
+            // Emitir evento de conversación creada
+            this.emit('conversationCreated', conversation);
+            
+            return conversation;
+        } catch (error) {
+            logError('Error creando conversación', {
+                error: error.message,
+                whatsappId,
+                userPhoneNumber,
+                stack: error.stack
             });
             throw error;
         }
     }
 
     getConversation(whatsappId) {
-        return this.manager.get(whatsappId);
+        try {
+            return this.manager.get(whatsappId);
+        } catch (error) {
+            logError('Error obteniendo conversación', {
+                error: error.message,
+                whatsappId,
+                stack: error.stack
+            });
+            return null;
+        }
     }
 
     getAllConversations() {
-        return this.manager.getAll();
+        try {
+            return this.manager.getAll();
+        } catch (error) {
+            logError('Error obteniendo todas las conversaciones', {
+                error: error.message,
+                stack: error.stack
+            });
+            return [];
+        }
     }
 
     getActiveConversationCount() {
-        return this.manager.getCount();
+        try {
+            return this.manager.getCount();
+        } catch (error) {
+            logError('Error obteniendo conteo de conversaciones', {
+                error: error.message,
+                stack: error.stack
+            });
+            return 0;
+        }
     }
 
     async closeConversation(whatsappId) {
-        const conversation = this.manager.get(whatsappId);
-        if (conversation) {
-            this.manager.delete(whatsappId);
-            this.emit('conversationClosed', { 
-                whatsappId, 
-                conversation: conversation.toJSON() 
+        try {
+            const conversation = this.manager.get(whatsappId);
+            if (conversation) {
+                // Preparar datos para el evento antes de eliminar
+                const conversationData = conversation.toJSON();
+                
+                // Eliminar la conversación
+                this.manager.delete(whatsappId);
+                
+                // Emitir evento con los datos guardados
+                this.emit('conversationClosed', { 
+                    whatsappId, 
+                    conversation: conversationData 
+                });
+                
+                logInfo('Conversación cerrada exitosamente', {
+                    whatsappId,
+                    timestamp: new Date().toISOString()
+                });
+
+                return true;
+            }
+            return false;
+        } catch (error) {
+            logError('Error cerrando conversación', {
+                error: error.message,
+                whatsappId,
+                stack: error.stack
             });
-            return true;
+            return false;
         }
-        return false;
+    }
+
+    async updateConversationMetadata(whatsappId, metadata) {
+        try {
+            const conversation = this.manager.get(whatsappId);
+            if (conversation) {
+                conversation.updateMetadata(metadata);
+                this.emit('conversationUpdated', conversation);
+                return true;
+            }
+            return false;
+        } catch (error) {
+            logError('Error actualizando metadata de conversación', {
+                error: error.message,
+                whatsappId,
+                stack: error.stack
+            });
+            return false;
+        }
+    }
+
+    getConversationAnalytics() {
+        try {
+            const conversations = this.getAllConversations();
+            const now = Date.now();
+            
+            // Análisis básico de conversaciones
+            const analytics = {
+                totalConversations: conversations.length,
+                activeLastHour: 0,
+                averageMessagesPerConversation: 0,
+                messageTypes: {},
+                totalMessages: 0
+            };
+
+            // Procesar cada conversación
+            for (const conversation of conversations) {
+                // Contar conversaciones activas en la última hora
+                if (now - conversation.lastUpdateTime <= 3600000) {
+                    analytics.activeLastHour++;
+                }
+
+                // Analizar mensajes
+                const messages = conversation.getMessages();
+                analytics.totalMessages += messages.length;
+
+                // Contar tipos de mensajes
+                messages.forEach(msg => {
+                    analytics.messageTypes[msg.type] = (analytics.messageTypes[msg.type] || 0) + 1;
+                });
+            }
+
+            // Calcular promedio de mensajes
+            if (analytics.totalConversations > 0) {
+                analytics.averageMessagesPerConversation = 
+                    analytics.totalMessages / analytics.totalConversations;
+            }
+
+            return analytics;
+
+        } catch (error) {
+            logError('Error generando analytics de conversaciones', {
+                error: error.message,
+                stack: error.stack
+            });
+            return null;
+        }
     }
 }
 
-// Exportar una única instancia del servicio
 module.exports = new ConversationService();
