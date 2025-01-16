@@ -6,7 +6,7 @@ class MessageFormatter {
             from: message.from,
             timestamp: new Date(parseInt(message.timestamp) * 1000).toISOString(),
             type: message.type,
-            text: message.text?.body || '',
+            text: message.text ? { body: message.text.body } : null, // Mantener estructura
             audio: message.audio?.id,
             direction: 'inbound',
             status: 'received',

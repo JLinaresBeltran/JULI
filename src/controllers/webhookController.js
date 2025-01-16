@@ -4,7 +4,7 @@ const whatsappService = require('../services/whatsappService');
 const WebSocketManager = require('../services/websocketService');
 const { logInfo, logError } = require('../utils/logger');
 
-// Funciones auxiliares
+// Funciones auxiliares mejoradas
 function validateWebhookPayload(body) {
     if (!body || !body.object || !Array.isArray(body.entry)) {
         return false;
@@ -13,17 +13,47 @@ function validateWebhookPayload(body) {
 }
 
 function validateMessage(message, context) {
-    if (!message || !message.id || !message.from || !message.timestamp) {
-        logError('Invalid message structure', { message });
+    try {
+        // Validación básica de estructura
+        if (!message || !message.id || !message.from || !message.timestamp) {
+            logError('Invalid message structure', { message });
+            return false;
+        }
+
+        // Validación del contexto
+        if (!context || !context.metadata || !context.contacts) {
+            logError('Invalid message context', { context });
+            return false;
+        }
+
+        // Validación específica por tipo de mensaje
+        switch (message.type) {
+            case 'text':
+                if (!message.text?.body) {
+                    logError('Invalid text message structure', { message });
+                    return false;
+                }
+                break;
+            case 'audio':
+                if (!message.audio?.id) {
+                    logError('Invalid audio message structure', { message });
+                    return false;
+                }
+                break;
+        }
+
+        // Validación del formato del número de teléfono
+        const phoneRegex = /^[0-9]{10,15}$/;
+        if (!phoneRegex.test(message.from)) {
+            logError('Invalid phone number format', { from: message.from });
+            return false;
+        }
+
+        return true;
+    } catch (error) {
+        logError('Error in message validation', { error: error.message });
         return false;
     }
-
-    if (!context || !context.metadata || !context.contacts) {
-        logError('Invalid message context', { context });
-        return false;
-    }
-
-    return true;
 }
 
 function formatMessage(message, context) {
@@ -40,7 +70,7 @@ function formatMessage(message, context) {
             type: message.type,
             direction: 'inbound',
             status: 'received',
-            content: {}, // Inicializar contenido vacío
+            content: {},
             profile: context.contacts[0],
             metadata: {
                 displayPhoneNumber: context.metadata.display_phone_number,
@@ -48,22 +78,19 @@ function formatMessage(message, context) {
             }
         };
 
-        // Agregar contenido según el tipo de mensaje
+        // Procesamiento mejorado según tipo de mensaje
         switch (message.type) {
             case 'text':
-                if (!message.text?.body) {
-                    throw new Error('Invalid text message structure');
-                }
                 formattedMessage.content = {
-                    text: message.text.body
+                    text: message.text.body,
+                    isGreeting: isGreeting(message.text.body)
                 };
                 break;
             case 'audio':
-                if (!message.audio?.id) {
-                    throw new Error('Invalid audio message structure');
-                }
                 formattedMessage.content = {
-                    audioId: message.audio.id
+                    audioId: message.audio.id,
+                    mimeType: message.audio.mime_type,
+                    voice: message.audio.voice || false
                 };
                 break;
             default:
@@ -72,6 +99,11 @@ function formatMessage(message, context) {
                     raw: message
                 };
         }
+
+        logInfo('Message formatted successfully', {
+            messageId: message.id,
+            type: message.type
+        });
 
         return formattedMessage;
     } catch (error) {
@@ -82,6 +114,23 @@ function formatMessage(message, context) {
         });
         throw error;
     }
+}
+
+// Nueva función para detectar saludos
+function isGreeting(text) {
+    const greetings = [
+        'hola',
+        'buenos días',
+        'buen día',
+        'buenas',
+        'buenas tardes',
+        'buenas noches',
+        'hi',
+        'hello'
+    ];
+    return text && greetings.some(greeting => 
+        text.toLowerCase().trim().includes(greeting.toLowerCase())
+    );
 }
 
 const webhookController = {
@@ -115,9 +164,14 @@ const webhookController = {
             }
 
             const results = await this._processEntries(req.body.entry);
+            
+            logInfo('Webhook processing completed', { results });
             return res.status(200).send('EVENT_RECEIVED');
         } catch (error) {
-            logError('Error processing webhook', { error: error.message });
+            logError('Error processing webhook', { 
+                error: error.message,
+                stack: error.stack
+            });
             return res.status(200).send('EVENT_RECEIVED');
         }
     },
@@ -130,7 +184,10 @@ const webhookController = {
         };
 
         for (const entry of entries) {
-            if (!entry.changes) continue;
+            if (!entry.changes) {
+                logInfo('Entry has no changes', { entryId: entry.id });
+                continue;
+            }
 
             for (const change of entry.changes) {
                 if (change.value?.messages) {
@@ -152,6 +209,8 @@ const webhookController = {
                 });
 
                 const formattedMessage = formatMessage(message, context);
+                
+                // Procesar el mensaje a través del servicio de conversación
                 const conversation = await conversationService.processIncomingMessage(formattedMessage);
 
                 // Marcar como leído si es texto
@@ -178,7 +237,8 @@ const webhookController = {
                 results.details.push({
                     id: message.id,
                     status: 'success',
-                    type: message.type
+                    type: message.type,
+                    isGreeting: message.type === 'text' ? isGreeting(message.text.body) : false
                 });
 
             } catch (error) {
@@ -192,7 +252,8 @@ const webhookController = {
 
                 logError('Error processing message', {
                     messageId: message.id,
-                    error: error.message
+                    error: error.message,
+                    stack: error.stack
                 });
             }
         }
@@ -204,7 +265,10 @@ const webhookController = {
             logInfo('Conversations retrieved', { count: conversations.length });
             return res.status(200).json(conversations);
         } catch (error) {
-            logError('Error retrieving conversations', { error: error.message });
+            logError('Error retrieving conversations', { 
+                error: error.message,
+                stack: error.stack 
+            });
             return res.status(500).json({ error: error.message });
         }
     },
@@ -215,7 +279,10 @@ const webhookController = {
             logInfo('Analytics generated', { timestamp: new Date().toISOString() });
             return res.status(200).json(analytics);
         } catch (error) {
-            logError('Error generating analytics', { error: error.message });
+            logError('Error generating analytics', { 
+                error: error.message,
+                stack: error.stack 
+            });
             return res.status(500).json({ error: error.message });
         }
     }
