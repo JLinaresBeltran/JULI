@@ -2,12 +2,13 @@ const whatsappService = require('./whatsappService');
 const { logInfo, logError } = require('../utils/logger');
 
 class WelcomeHandlerService {
-    async handleInitialInteraction(userId, userName) {
+    async handleInitialInteraction(userId, userName, context) {
         try {
             logInfo('Sending welcome message', {
                 userId,
                 userName,
-                context: 'handleInitialInteraction'
+                context: 'handleInitialInteraction',
+                conversationOrigin: context?.conversation?.origin?.type
             });
 
             const welcomeMessage = {
@@ -25,7 +26,6 @@ class WelcomeHandlerService {
                 messageId: response?.messages?.[0]?.id
             });
 
-            // Retornar un objeto con la información completa
             return {
                 success: true,
                 messageId: response?.messages?.[0]?.id,
@@ -34,7 +34,8 @@ class WelcomeHandlerService {
                 metadata: {
                     userId,
                     userName,
-                    type: 'welcome_message'
+                    conversationOrigin: context?.conversation?.origin?.type || 'unknown',
+                    messageType: 'welcome_message'
                 }
             };
 
@@ -46,22 +47,22 @@ class WelcomeHandlerService {
                 stack: error.stack,
                 context: 'handleInitialInteraction'
             });
-
-            // Propagar el error con más contexto
-            throw new Error(`Failed to send welcome message: ${error.message}`);
+            throw error;
         }
     }
 
-    async handleConversationStart(userId, context) {
+    async handleUserStartedConversation(userId, context) {
         try {
-            logInfo('Handling conversation start', {
+            const userName = context?.contacts?.[0]?.profile?.name || 'Usuario';
+            
+            logInfo('User started conversation', {
                 userId,
-                hasProfile: !!context?.contacts?.[0]?.profile
+                userName,
+                conversationType: context?.conversation?.origin?.type,
+                timestamp: new Date().toISOString()
             });
 
-            const userName = context?.contacts?.[0]?.profile?.name || 'Usuario';
-            return this.handleInitialInteraction(userId, userName);
-
+            return this.handleInitialInteraction(userId, userName, context);
         } catch (error) {
             logError('Failed to handle conversation start', {
                 error: error.message,
@@ -73,12 +74,16 @@ class WelcomeHandlerService {
         }
     }
 
-    getWelcomeMessage(userName) {
-        return `¡Hola ${userName}! 👋\n\nSoy JULI, tu asistente legal virtual personalizada ✨\n\nMe especializo en brindarte orientación sobre:\n🏠 Servicios públicos\n📱 Telecomunicaciones\n✈️ Transporte aéreo\n\nCuéntame con detalle tu situación para poder ayudarte de la mejor manera posible. 💪`;
+    isConversationStart(context) {
+        return (
+            context?.contacts?.[0]?.wa_id &&
+            !context.messages && // No hay mensajes aún
+            context?.conversation?.origin?.type === 'user_initiated'
+        );
     }
 
-    isValidResponse(response) {
-        return !!(response?.messages?.[0]?.id);
+    getWelcomeMessage(userName) {
+        return `¡Hola ${userName}! 👋\n\nSoy JULI, tu asistente legal virtual personalizada ✨\n\nMe especializo en brindarte orientación sobre:\n🏠 Servicios públicos\n📱 Telecomunicaciones\n✈️ Transporte aéreo\n\nCuéntame con detalle tu situación para poder ayudarte de la mejor manera posible. 💪`;
     }
 }
 
