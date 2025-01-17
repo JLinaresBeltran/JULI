@@ -169,40 +169,28 @@ const webhookController = {
 
     async _processEntries(entries) {
         console.log('📝 Processing entries:', entries.length);
-        const results = {
-            processed: 0,
-            errors: 0,
-            details: []
-        };
+        const results = { processed: 0, errors: 0, details: [] };
 
         for (const entry of entries) {
-            if (!entry.changes) {
-                console.log('⚠️ Entry has no changes:', entry.id);
-                continue;
-            }
-
             for (const change of entry.changes) {
                 console.log('🔄 Processing change:', {
                     field: change.field,
                     hasMessages: !!change.value?.messages,
                     hasStatuses: !!change.value?.statuses,
-                    metadata: change.value?.metadata
+                    metadata: change.value?.metadata,
+                    type: change.value?.conversation?.origin?.type
                 });
 
-                // Detectar inicio de sesión por primera vez
-                if (this._isFirstInteraction(change.value)) {
-                    console.log('🌟 First interaction detected');
-                    const contact = change.value.contacts?.[0];
-                    if (contact) {
-                        try {
-                            await this._handleNewUserWelcome(contact.wa_id, change.value);
-                            results.processed++;
-                            continue;
-                        } catch (error) {
-                            console.error('❌ Error handling first interaction:', error);
-                            results.errors++;
-                            continue;
-                        }
+                // Detectar inicio de conversación
+                if (this._isConversationStart(change)) {
+                    try {
+                        const userId = change.value.contacts[0].wa_id;
+                        await this._handleNewUserWelcome(userId, change.value);
+                        results.processed++;
+                        continue;
+                    } catch (error) {
+                        console.error('❌ Error handling conversation start:', error);
+                        results.errors++;
                     }
                 }
 
@@ -211,7 +199,6 @@ const webhookController = {
                     await this._processMessages(change.value.messages, change.value, results);
                 }
 
-                // Procesar estados
                 if (change.value?.statuses) {
                     await this._processStatuses(change.value.statuses, change.value, results);
                 }
@@ -221,12 +208,14 @@ const webhookController = {
         return results;
     },
 
-    _isFirstInteraction(context) {
+    _isConversationStart(change) {
+        // Verifica si es un inicio de conversación real
         return (
-            context?.contacts?.[0]?.wa_id && // Tiene un contacto válido
-            !context.messages && // No hay mensajes todavía
-            context?.contacts?.[0]?.profile?.name && // Tiene información de perfil
-            !this.conversationService.getConversation(context.contacts[0].wa_id) // No existe conversación previa
+            change.field === "messages" &&
+            change.value?.contacts?.[0] &&
+            !change.value.messages && // No hay mensajes todavía
+            !!change.value?.contacts?.[0]?.wa_id &&
+            change.value?.event === 'system_customer_welcome'
         );
     },
 
@@ -236,7 +225,7 @@ const webhookController = {
             const userName = context?.contacts?.[0]?.profile?.name || 'Usuario';
 
             // Verificar si ya existe conversación (doble check)
-            const existingConversation = await this.conversationService.getConversation(userId);
+            const existingConversation = await conversationService.getConversation(userId);
             if (existingConversation) {
                 console.log('ℹ️ User already has conversation:', userId);
                 return existingConversation;
@@ -251,20 +240,15 @@ const webhookController = {
             );
 
             // 2. Crear la conversación después del mensaje de bienvenida
-            const conversation = await this.conversationService.createConversation(
+            const conversation = await conversationService.createConversation(
                 userId,
                 userId
             );
 
             console.log('📝 Conversation created:', conversation.whatsappId);
-
+            
             // 3. Notificar por WebSocket
-            const wsManager = WebSocketManager.getInstance();
-            if (wsManager) {
-                wsManager.broadcastConversationUpdate(conversation);
-                wsManager.broadcastConversations();
-                console.log('🔄 WebSocket notifications sent');
-            }
+            this._broadcastUpdates(conversation);
 
             return conversation;
         } catch (error) {
@@ -286,8 +270,14 @@ const webhookController = {
                     from: message.from,
                     timestamp: message.timestamp,
                     isText: message.type === 'text',
-                    content: message.type === 'text' ? message.text?.body : undefined
+                    content: message.type === 'text' ? message.text?.body : undefined,
+                    isNewUser: context?.contacts?.[0] && !conversationService.getConversation(message.from)
                 });
+
+                // Si es un usuario nuevo y no es inicio de conversación, manejar bienvenida
+                if (!conversationService.getConversation(message.from)) {
+                    await this._handleNewUserWelcome(message.from, context);
+                }
 
                 const formattedMessage = formatMessage(message, context);
                 const conversation = await conversationService.processIncomingMessage(
@@ -295,7 +285,7 @@ const webhookController = {
                     { createIfNotExists: true }
                 );
 
-                // Marcar como leído
+                // Marcar como leído y procesar normalmente
                 if (message.type === 'text') {
                     try {
                         await whatsappService.markAsRead(
@@ -311,12 +301,8 @@ const webhookController = {
                     }
                 }
 
-                // Notificar por WebSocket
-                const wsManager = WebSocketManager.getInstance();
-                if (wsManager) {
-                    wsManager.broadcastConversationUpdate(conversation);
-                    wsManager.broadcastConversations();
-                }
+                // WebSocket notifications
+                this._broadcastUpdates(conversation);
 
                 results.processed++;
                 results.details.push({
@@ -376,6 +362,15 @@ const webhookController = {
                     error: error.message
                 });
             }
+        }
+    },
+
+    _broadcastUpdates(conversation) {
+        const wsManager = WebSocketManager.getInstance();
+        if (wsManager) {
+            wsManager.broadcastConversationUpdate(conversation);
+            wsManager.broadcastConversations();
+            console.log('🔄 WebSocket notifications sent');
         }
     },
 
