@@ -4,13 +4,15 @@ const { logInfo, logError } = require('../utils/logger');
 class WelcomeHandlerService {
     async handleInitialInteraction(userId, userName, context = {}) {
         try {
+            // Logging mejorado para debugging
             logInfo('Starting initial interaction', {
                 userId,
                 userName,
                 context: {
                     type: context?.conversation?.origin?.type,
                     id: context?.conversation?.id,
-                    hasMessages: !!context?.messages
+                    hasMessages: !!context?.messages,
+                    isSubscription: this.isSubscriptionMessage(context)
                 }
             });
 
@@ -22,6 +24,10 @@ class WelcomeHandlerService {
             };
 
             const response = await whatsappService.sendMessage(userId, welcomeMessage);
+            
+            if (!response?.messages?.[0]?.id) {
+                throw new Error('No message ID received from WhatsApp');
+            }
 
             logInfo('Welcome message sent successfully', {
                 userId,
@@ -32,17 +38,18 @@ class WelcomeHandlerService {
 
             return {
                 success: true,
-                messageId: response?.messages?.[0]?.id,
                 message: welcomeMessage,
+                messageId: response.messages[0].id,
                 metadata: {
                     userId,
                     userName,
-                    conversationId: context?.conversation?.id,
-                    initiationType: context?.conversation?.origin?.type || 'unknown',
-                    timestamp: new Date().toISOString()
+                    type: 'welcome',
+                    context: {
+                        conversationId: context?.conversation?.id,
+                        initiationType: context?.conversation?.origin?.type || 'unknown'
+                    }
                 }
             };
-
         } catch (error) {
             logError('Welcome message failed', {
                 error: error.message,
@@ -58,47 +65,75 @@ class WelcomeHandlerService {
         }
     }
 
-    async handleConversationStart(userId, context) {
-        try {
-            const userName = context?.contacts?.[0]?.profile?.name || 'Usuario';
-            logInfo('Conversation start detected', {
-                userId,
-                userName,
-                context: {
-                    type: context?.conversation?.origin?.type,
-                    id: context?.conversation?.id
-                }
-            });
+    isSubscriptionMessage(context) {
+        return !!(
+            context?.statuses?.[0]?.status === "subscribed" ||
+            context?.contacts?.[0]?.wa_id && 
+            !context?.messages &&
+            context?.conversation?.origin?.type === "user_initiated"
+        );
+    }
 
-            return this.handleInitialInteraction(userId, userName, context);
-        } catch (error) {
-            logError('Conversation start handling failed', {
-                error: error.message,
-                userId,
-                context: {
-                    type: context?.conversation?.origin?.type,
-                    id: context?.conversation?.id
-                },
-                stack: error.stack
-            });
-            throw error;
+    isWelcomeMessageRequired(context) {
+        // No enviar mensaje de bienvenida si ya existe una conversación activa
+        if (context?.conversation?.exists) {
+            return false;
         }
+
+        // Es un nuevo usuario o una suscripción
+        return this.isSubscriptionMessage(context) || 
+               (context?.contacts?.[0]?.wa_id && !context?.conversation?.id);
     }
 
     getWelcomeMessage(userName) {
         return `¡Hola ${userName}! 👋\n\nSoy JULI, tu asistente legal virtual personalizada ✨\n\nMe especializo en brindarte orientación sobre:\n🏠 Servicios públicos\n📱 Telecomunicaciones\n✈️ Transporte aéreo\n\nCuéntame con detalle tu situación para poder ayudarte de la mejor manera posible. 💪`;
     }
 
-    isValidWelcomeResponse(response) {
-        return !!(response?.messages?.[0]?.id);
-    }
+    async handleConversationStart(userId, context) {
+        try {
+            logInfo('New conversation starting', {
+                userId,
+                hasProfile: !!context?.contacts?.[0]?.profile,
+                isSubscription: this.isSubscriptionMessage(context)
+            });
 
-    isConversationStart(context) {
-        return (
-            context?.contacts?.[0]?.wa_id &&
-            context?.conversation?.origin?.type === 'user_initiated' &&
-            !context.messages // No hay mensajes todavía
-        );
+            const userName = context?.contacts?.[0]?.profile?.name || 'Usuario';
+
+            // Solo enviamos mensaje si es requerido
+            if (this.isWelcomeMessageRequired(context)) {
+                logInfo('Sending welcome message for new conversation', {
+                    userId,
+                    userName,
+                    context: {
+                        type: context?.conversation?.origin?.type,
+                        isSubscription: this.isSubscriptionMessage(context)
+                    }
+                });
+
+                return await this.handleInitialInteraction(userId, userName, {
+                    ...context,
+                    isNewConversation: true
+                });
+            }
+
+            return {
+                success: true,
+                message: null,
+                metadata: {
+                    userId,
+                    userName,
+                    type: 'existing_conversation'
+                }
+            };
+
+        } catch (error) {
+            logError('Failed to handle conversation start', {
+                error: error.message,
+                userId,
+                stack: error.stack
+            });
+            throw error;
+        }
     }
 }
 
