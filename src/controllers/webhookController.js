@@ -123,6 +123,17 @@ function isGreeting(text) {
     );
 }
 
+function isConversationStart(change) {
+    return (
+        change.field === "messages" &&
+        change.value?.contacts?.[0] &&
+        !change.value.messages && // No hay mensajes aún
+        change.value?.contacts?.[0]?.wa_id &&
+        ((change.value?.conversation?.origin?.type === "user_initiated") ||
+         (change.value?.statuses?.[0]?.conversation?.origin?.type === "user_initiated"))
+    );
+}
+
 const webhookController = {
     async verifyWebhook(req, res) {
         const mode = req.query['hub.mode'];
@@ -189,22 +200,32 @@ const webhookController = {
                     metadata: change.value?.metadata
                 });
 
-                // 1. Primero verificar si es un nuevo usuario
-                const isNewUser = await this._checkNewUser(change.value);
-                
-                // 2. Si es nuevo usuario, enviar bienvenida antes de procesar cualquier cosa
-                if (isNewUser) {
-                    const firstMessage = change.value.messages?.[0];
-                    if (firstMessage) {
-                        console.log('👋 New user detected, initiating welcome flow:', firstMessage.from);
-                        await this._handleNewUserWelcome(firstMessage.from, change.value);
+                // Detectar inicio de conversación
+                if (isConversationStart(change)) {
+                    console.log('🌟 Conversation start detected');
+                    try {
+                        const userId = change.value.contacts[0].wa_id;
+                        await this._handleNewUserWelcome(userId, change.value);
+                        results.processed++;
+                        continue;
+                    } catch (error) {
+                        console.error('❌ Error handling conversation start:', error);
+                        results.errors++;
+                        continue;
                     }
                 }
 
-                // 3. Procesar los mensajes y estados normalmente
+                // Procesar mensajes normalmente
                 if (change.value?.messages) {
+                    const isNewUser = await this._checkNewUser(change.value);
+                    if (isNewUser) {
+                        const firstMessage = change.value.messages[0];
+                        console.log('👋 New user detected from message:', firstMessage.from);
+                        await this._handleNewUserWelcome(firstMessage.from, change.value);
+                    }
                     await this._processMessages(change.value.messages, change.value, results);
                 }
+
                 if (change.value?.statuses) {
                     await this._processStatuses(change.value.statuses, change.value, results);
                 }
@@ -235,18 +256,19 @@ const webhookController = {
             console.log('✨ Starting welcome flow for:', userId);
             const userName = context.contacts?.[0]?.profile?.name || 'Usuario';
 
+            // Verificar si ya existe conversación
+            const existingConversation = await conversationService.getConversation(userId);
+            if (existingConversation) {
+                console.log('ℹ️ User already has conversation:', userId);
+                return existingConversation;
+            }
+
             // 1. Enviar mensaje de bienvenida primero
             console.log('📬 Sending welcome message to:', userId);
             const welcomeResult = await welcomeHandlerService.handleInitialInteraction(
                 userId,
                 userName
             );
-
-            if (!welcomeResult?.messages?.[0]?.id) {
-                throw new Error('Failed to send welcome message');
-            }
-
-            console.log('✅ Welcome message sent:', welcomeResult.messages[0].id);
 
             // 2. Crear la conversación
             const conversation = await conversationService.createConversation(
