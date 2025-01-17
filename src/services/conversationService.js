@@ -5,6 +5,8 @@ const {
     ConversationEvents
 } = require('./conversation');
 const { logError, logInfo } = require('../utils/logger');
+const queryClassifierService = require('./queryClassifierService');
+const whatsappService = require('./whatsappService');
 
 class ConversationService extends ConversationEvents {
     constructor() {
@@ -98,6 +100,11 @@ class ConversationService extends ConversationEvents {
                 throw new Error('No existe una conversación activa');
             }
 
+            // Verificar si necesitamos clasificar el mensaje
+            if (conversation.isAwaitingClassification() && message.type === 'text') {
+                await this._handleMessageClassification(conversation, message);
+            }
+
             if (conversation.addMessage(message)) {
                 await ConversationProcessor.processMessage(message, conversation);
                 this.emit('messageReceived', {
@@ -115,6 +122,52 @@ class ConversationService extends ConversationEvents {
             });
             throw error;
         }
+    }
+
+    async _handleMessageClassification(conversation, message) {
+        try {
+            logInfo('Clasificando mensaje', {
+                whatsappId: conversation.whatsappId,
+                messageId: message.id
+            });
+
+            const classification = queryClassifierService.classifyQuery(message.text.body);
+            
+            // Actualizar la conversación con la categoría
+            await this.updateConversationMetadata(conversation.whatsappId, {
+                category: classification.category,
+                classificationConfidence: classification.confidence
+            });
+
+            // Enviar mensaje de confirmación
+            await this._sendCategoryConfirmation(conversation.whatsappId, classification.category);
+
+            return classification;
+        } catch (error) {
+            logError('Error en clasificación de mensaje', {
+                error: error.message,
+                whatsappId: conversation.whatsappId,
+                messageId: message.id
+            });
+            throw error;
+        }
+    }
+
+    async _sendCategoryConfirmation(whatsappId, category) {
+        const messages = {
+            servicios_publicos: '🏠 Te ayudaré con tu consulta sobre servicios públicos.',
+            telecomunicaciones: '📱 Te ayudaré con tu consulta sobre telecomunicaciones.',
+            transporte_aereo: '✈️ Te ayudaré con tu consulta sobre transporte aéreo.'
+        };
+
+        const message = messages[category] || 'Entiendo tu consulta. ¿En qué puedo ayudarte?';
+        
+        await whatsappService.sendTextMessage(whatsappId, message);
+        
+        logInfo('Mensaje de confirmación enviado', {
+            whatsappId,
+            category
+        });
     }
 
     async createConversation(whatsappId, userPhoneNumber) {
@@ -225,6 +278,13 @@ class ConversationService extends ConversationEvents {
             if (conversation) {
                 conversation.updateMetadata(metadata);
                 this.emit('conversationUpdated', conversation);
+                
+                logInfo('Metadata de conversación actualizada', {
+                    whatsappId,
+                    category: metadata.category,
+                    confidence: metadata.classificationConfidence
+                });
+                
                 return true;
             }
             return false;
@@ -249,7 +309,8 @@ class ConversationService extends ConversationEvents {
                 activeLastHour: 0,
                 averageMessagesPerConversation: 0,
                 messageTypes: {},
-                totalMessages: 0
+                totalMessages: 0,
+                categoriesDistribution: {}
             };
 
             // Procesar cada conversación
@@ -267,6 +328,12 @@ class ConversationService extends ConversationEvents {
                 messages.forEach(msg => {
                     analytics.messageTypes[msg.type] = (analytics.messageTypes[msg.type] || 0) + 1;
                 });
+
+                // Contar distribución de categorías
+                if (conversation.category) {
+                    analytics.categoriesDistribution[conversation.category] = 
+                        (analytics.categoriesDistribution[conversation.category] || 0) + 1;
+                }
             }
 
             // Calcular promedio de mensajes
