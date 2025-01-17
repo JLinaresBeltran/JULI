@@ -5,8 +5,6 @@ const {
     ConversationEvents
 } = require('./conversation');
 const { logError, logInfo } = require('../utils/logger');
-const queryClassifierService = require('./queryClassifierService');
-const whatsappService = require('./whatsappService');
 
 class ConversationService extends ConversationEvents {
     constructor() {
@@ -84,10 +82,9 @@ class ConversationService extends ConversationEvents {
             if (!ConversationValidator.validateMessage(message)) {
                 throw new Error('Mensaje inválido');
             }
-
+    
             let conversation = this.manager.get(message.from);
             
-            // Solo crear una nueva conversación si se especifica o si ya existe
             if (!conversation && options.createIfNotExists) {
                 conversation = this.manager.create(message.from, message.from);
                 logInfo('Nueva conversación creada', {
@@ -95,16 +92,59 @@ class ConversationService extends ConversationEvents {
                     context: 'processIncomingMessage'
                 });
             }
-
+    
             if (!conversation) {
                 throw new Error('No existe una conversación activa');
             }
-
-            // Verificar si necesitamos clasificar el mensaje
-            if (conversation.isAwaitingClassification() && message.type === 'text') {
-                await this._handleMessageClassification(conversation, message);
+    
+            // Aquí agregamos la lógica de clasificación
+            if (message.type === 'text' && conversation.awaitingClassification) {
+                const queryClassifierService = require('./queryClassifierService');
+                const chatbaseController = require('../controllers/chatbaseController');
+                
+                try {
+                    // Clasificar el mensaje
+                    const classification = queryClassifierService.classifyQuery(message.text.body);
+                    
+                    // Actualizar la conversación con la categoría
+                    await this.updateConversationMetadata(conversation.whatsappId, {
+                        category: classification.category,
+                        classificationConfidence: classification.confidence
+                    });
+    
+                    // Enviar mensaje a Chatbase
+                    const chatbaseHandler = `handle${classification.category.split('_')
+                        .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+                        .join('')}`;
+    
+                    if (chatbaseController[chatbaseHandler]) {
+                        await chatbaseController[chatbaseHandler]({
+                            body: { message: message.text.body }
+                        }, {
+                            json: (response) => {
+                                // Enviar respuesta de Chatbase al usuario
+                                whatsappService.sendTextMessage(
+                                    message.from, 
+                                    response.text || '✈️ Entiendo tu situación. Estoy procesando tu consulta sobre el retraso de tu vuelo.'
+                                );
+                            }
+                        });
+    
+                        logInfo('Mensaje procesado por Chatbase', {
+                            category: classification.category,
+                            messageId: message.id
+                        });
+                    }
+                } catch (error) {
+                    logError('Error en la clasificación del mensaje', {
+                        error: error.message,
+                        messageId: message.id,
+                        stack: error.stack
+                    });
+                }
             }
-
+    
+            // Continuar con el procesamiento normal del mensaje
             if (conversation.addMessage(message)) {
                 await ConversationProcessor.processMessage(message, conversation);
                 this.emit('messageReceived', {
@@ -112,7 +152,7 @@ class ConversationService extends ConversationEvents {
                     message
                 });
             }
-
+    
             return conversation;
         } catch (error) {
             logError('Error procesando mensaje entrante', {
@@ -122,52 +162,6 @@ class ConversationService extends ConversationEvents {
             });
             throw error;
         }
-    }
-
-    async _handleMessageClassification(conversation, message) {
-        try {
-            logInfo('Clasificando mensaje', {
-                whatsappId: conversation.whatsappId,
-                messageId: message.id
-            });
-
-            const classification = queryClassifierService.classifyQuery(message.text.body);
-            
-            // Actualizar la conversación con la categoría
-            await this.updateConversationMetadata(conversation.whatsappId, {
-                category: classification.category,
-                classificationConfidence: classification.confidence
-            });
-
-            // Enviar mensaje de confirmación
-            await this._sendCategoryConfirmation(conversation.whatsappId, classification.category);
-
-            return classification;
-        } catch (error) {
-            logError('Error en clasificación de mensaje', {
-                error: error.message,
-                whatsappId: conversation.whatsappId,
-                messageId: message.id
-            });
-            throw error;
-        }
-    }
-
-    async _sendCategoryConfirmation(whatsappId, category) {
-        const messages = {
-            servicios_publicos: '🏠 Te ayudaré con tu consulta sobre servicios públicos.',
-            telecomunicaciones: '📱 Te ayudaré con tu consulta sobre telecomunicaciones.',
-            transporte_aereo: '✈️ Te ayudaré con tu consulta sobre transporte aéreo.'
-        };
-
-        const message = messages[category] || 'Entiendo tu consulta. ¿En qué puedo ayudarte?';
-        
-        await whatsappService.sendTextMessage(whatsappId, message);
-        
-        logInfo('Mensaje de confirmación enviado', {
-            whatsappId,
-            category
-        });
     }
 
     async createConversation(whatsappId, userPhoneNumber) {
@@ -278,13 +272,6 @@ class ConversationService extends ConversationEvents {
             if (conversation) {
                 conversation.updateMetadata(metadata);
                 this.emit('conversationUpdated', conversation);
-                
-                logInfo('Metadata de conversación actualizada', {
-                    whatsappId,
-                    category: metadata.category,
-                    confidence: metadata.classificationConfidence
-                });
-                
                 return true;
             }
             return false;
@@ -309,8 +296,7 @@ class ConversationService extends ConversationEvents {
                 activeLastHour: 0,
                 averageMessagesPerConversation: 0,
                 messageTypes: {},
-                totalMessages: 0,
-                categoriesDistribution: {}
+                totalMessages: 0
             };
 
             // Procesar cada conversación
@@ -328,12 +314,6 @@ class ConversationService extends ConversationEvents {
                 messages.forEach(msg => {
                     analytics.messageTypes[msg.type] = (analytics.messageTypes[msg.type] || 0) + 1;
                 });
-
-                // Contar distribución de categorías
-                if (conversation.category) {
-                    analytics.categoriesDistribution[conversation.category] = 
-                        (analytics.categoriesDistribution[conversation.category] || 0) + 1;
-                }
             }
 
             // Calcular promedio de mensajes
