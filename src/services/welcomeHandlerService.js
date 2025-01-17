@@ -86,7 +86,9 @@ class WelcomeHandlerService {
     }
 
     getWelcomeMessage(userName) {
-        return `¡Hola ${userName}! 👋\n\nSoy JULI, tu asistente legal virtual personalizada ✨\n\nMe especializo en brindarte orientación sobre:\n🏠 Servicios públicos\n📱 Telecomunicaciones\n✈️ Transporte aéreo\n\nCuéntame con detalle tu situación para poder ayudarte de la mejor manera posible. 💪`;
+        // Extraer solo el primer nombre
+        const firstName = userName.split(' ')[0];
+        return `¡Hola ${firstName}! 👋\n\nSoy JULI, tu asistente legal virtual personalizada ✨\n\nMe especializo en brindarte orientación sobre:\n🏠 Servicios públicos\n📱 Telecomunicaciones\n✈️ Transporte aéreo\n\nCuéntame con detalle tu situación para poder ayudarte de la mejor manera posible. 💪`;
     }
 
     async handleConversationStart(userId, context) {
