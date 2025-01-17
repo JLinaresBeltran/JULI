@@ -1,37 +1,41 @@
 // src/services/conversation/ConversationManager.js
-const { logInfo, logError } = require('../../utils/logger');
-const ConversationBase = require('./ConversationBase');
-
 class ConversationManager {
     constructor() {
         this.conversations = new Map();
-        this.config = {
-            timeout: 30 * 60 * 1000,
-            heartbeatInterval: 45000,
-            maxReconnectAttempts: 5,
-            maxRetryAttempts: 3
-        };
     }
 
     create(whatsappId, userPhoneNumber) {
-        if (!whatsappId || !userPhoneNumber) {
-            throw new Error('WhatsApp ID y número de teléfono son requeridos');
+        if (this.conversations.has(whatsappId)) {
+            return this.conversations.get(whatsappId);
         }
 
-        const conversation = new ConversationBase(whatsappId, userPhoneNumber);
-        this.conversations.set(whatsappId, conversation);
-        
-        logInfo('Nueva conversación creada', { 
-            whatsappId, 
+        const conversation = {
+            whatsappId,
             userPhoneNumber,
-            timestamp: conversation.startTime 
-        });
+            messages: [],
+            metadata: {},
+            category: null,
+            classificationConfidence: null,
+            createdAt: new Date(),
+            lastUpdateTime: Date.now(),
+            status: 'active'
+        };
 
+        this.conversations.set(whatsappId, conversation);
         return conversation;
     }
 
     get(whatsappId) {
         return this.conversations.get(whatsappId);
+    }
+
+    update(whatsappId, updates) {
+        const conversation = this.conversations.get(whatsappId);
+        if (!conversation) return false;
+
+        Object.assign(conversation, updates);
+        conversation.lastUpdateTime = Date.now();
+        return true;
     }
 
     delete(whatsappId) {
@@ -46,15 +50,25 @@ class ConversationManager {
         return this.conversations.size;
     }
 
-    cleanupInactive() {
-        const now = Date.now();
-        const inactiveIds = Array.from(this.conversations.entries())
-            .filter(([_, conv]) => now - conv.lastUpdateTime > this.config.timeout)
-            .map(([id]) => id);
+    updateMetadata(whatsappId, metadata) {
+        const conversation = this.conversations.get(whatsappId);
+        if (!conversation) return false;
 
-        inactiveIds.forEach(id => this.delete(id));
+        conversation.metadata = {
+            ...conversation.metadata,
+            ...metadata
+        };
         
-        return inactiveIds.length;
+        if (metadata.category) {
+            conversation.category = metadata.category;
+        }
+        
+        if (metadata.classificationConfidence) {
+            conversation.classificationConfidence = metadata.classificationConfidence;
+        }
+
+        conversation.lastUpdateTime = Date.now();
+        return true;
     }
 }
 
