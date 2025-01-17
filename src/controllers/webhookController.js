@@ -123,17 +123,6 @@ function isGreeting(text) {
     );
 }
 
-function isConversationStart(change) {
-    return (
-        change.field === "messages" &&
-        change.value?.contacts?.[0] &&
-        !change.value.messages && // No hay mensajes aún
-        change.value?.contacts?.[0]?.wa_id &&
-        ((change.value?.conversation?.origin?.type === "user_initiated") ||
-         (change.value?.statuses?.[0]?.conversation?.origin?.type === "user_initiated"))
-    );
-}
-
 const webhookController = {
     async verifyWebhook(req, res) {
         const mode = req.query['hub.mode'];
@@ -200,32 +189,29 @@ const webhookController = {
                     metadata: change.value?.metadata
                 });
 
-                // Detectar inicio de conversación
-                if (isConversationStart(change)) {
-                    console.log('🌟 Conversation start detected');
-                    try {
-                        const userId = change.value.contacts[0].wa_id;
-                        await this._handleNewUserWelcome(userId, change.value);
-                        results.processed++;
-                        continue;
-                    } catch (error) {
-                        console.error('❌ Error handling conversation start:', error);
-                        results.errors++;
-                        continue;
+                // Detectar inicio de sesión por primera vez
+                if (this._isFirstInteraction(change.value)) {
+                    console.log('🌟 First interaction detected');
+                    const contact = change.value.contacts?.[0];
+                    if (contact) {
+                        try {
+                            await this._handleNewUserWelcome(contact.wa_id, change.value);
+                            results.processed++;
+                            continue;
+                        } catch (error) {
+                            console.error('❌ Error handling first interaction:', error);
+                            results.errors++;
+                            continue;
+                        }
                     }
                 }
 
                 // Procesar mensajes normalmente
                 if (change.value?.messages) {
-                    const isNewUser = await this._checkNewUser(change.value);
-                    if (isNewUser) {
-                        const firstMessage = change.value.messages[0];
-                        console.log('👋 New user detected from message:', firstMessage.from);
-                        await this._handleNewUserWelcome(firstMessage.from, change.value);
-                    }
                     await this._processMessages(change.value.messages, change.value, results);
                 }
 
+                // Procesar estados
                 if (change.value?.statuses) {
                     await this._processStatuses(change.value.statuses, change.value, results);
                 }
@@ -235,29 +221,22 @@ const webhookController = {
         return results;
     },
 
-    async _checkNewUser(context) {
-        if (!context.messages?.[0]) return false;
-        
-        const userId = context.messages[0].from;
-        const existingConversation = await conversationService.getConversation(userId);
-        
-        console.log('🔍 Checking user status:', {
-            userId,
-            hasExistingConversation: !!existingConversation,
-            contacts: context.contacts?.length,
-            hasProfile: !!context.contacts?.[0]?.profile
-        });
-        
-        return !existingConversation;
+    _isFirstInteraction(context) {
+        return (
+            context?.contacts?.[0]?.wa_id && // Tiene un contacto válido
+            !context.messages && // No hay mensajes todavía
+            context?.contacts?.[0]?.profile?.name && // Tiene información de perfil
+            !this.conversationService.getConversation(context.contacts[0].wa_id) // No existe conversación previa
+        );
     },
 
     async _handleNewUserWelcome(userId, context) {
         try {
             console.log('✨ Starting welcome flow for:', userId);
-            const userName = context.contacts?.[0]?.profile?.name || 'Usuario';
+            const userName = context?.contacts?.[0]?.profile?.name || 'Usuario';
 
-            // Verificar si ya existe conversación
-            const existingConversation = await conversationService.getConversation(userId);
+            // Verificar si ya existe conversación (doble check)
+            const existingConversation = await this.conversationService.getConversation(userId);
             if (existingConversation) {
                 console.log('ℹ️ User already has conversation:', userId);
                 return existingConversation;
@@ -267,11 +246,12 @@ const webhookController = {
             console.log('📬 Sending welcome message to:', userId);
             const welcomeResult = await welcomeHandlerService.handleInitialInteraction(
                 userId,
-                userName
+                userName,
+                context
             );
 
-            // 2. Crear la conversación
-            const conversation = await conversationService.createConversation(
+            // 2. Crear la conversación después del mensaje de bienvenida
+            const conversation = await this.conversationService.createConversation(
                 userId,
                 userId
             );
@@ -374,7 +354,6 @@ const webhookController = {
                     pricing: status.pricing?.category
                 });
 
-                // Procesar el estado
                 results.processed++;
                 results.details.push({
                     id: status.id,
