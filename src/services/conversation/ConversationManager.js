@@ -11,7 +11,7 @@ class ConversationManager {
             if (this.conversations.has(whatsappId)) {
                 return this.conversations.get(whatsappId);
             }
-
+    
             const conversation = {
                 whatsappId,
                 userPhoneNumber,
@@ -23,7 +23,7 @@ class ConversationManager {
                 lastUpdateTime: Date.now(),
                 status: 'active',
                 awaitingClassification: true,
-
+    
                 // Métodos del objeto conversation
                 addMessage(message) {
                     try {
@@ -31,20 +31,20 @@ class ConversationManager {
                             logError('Invalid message structure', { message });
                             return false;
                         }
-
+    
                         // Evitar duplicados
                         const isDuplicate = this.messages.some(m => m.id === message.id);
                         if (isDuplicate) {
                             logInfo('Duplicate message detected', { messageId: message.id });
                             return false;
                         }
-
+    
                         // Agregar mensaje
                         this.messages.push({
                             ...message,
                             receivedAt: new Date()
                         });
-
+    
                         // Actualizar timestamp
                         this.lastUpdateTime = Date.now();
                         
@@ -63,29 +63,29 @@ class ConversationManager {
                         return false;
                     }
                 },
-
+    
                 getMessages() {
                     return [...this.messages];
                 },
-
+    
                 updateMetadata(metadata) {
                     try {
                         this.metadata = {
                             ...this.metadata,
                             ...metadata
                         };
-
+    
                         if (metadata.category) {
                             this.category = metadata.category;
                             this.awaitingClassification = false;
                         }
-
+    
                         if (metadata.classificationConfidence !== undefined) {
                             this.classificationConfidence = metadata.classificationConfidence;
                         }
-
+    
                         this.lastUpdateTime = Date.now();
-
+    
                         logInfo('Metadata updated successfully', {
                             whatsappId: this.whatsappId,
                             category: this.category,
@@ -99,7 +99,12 @@ class ConversationManager {
                         });
                     }
                 },
-
+    
+                // Agregar el método isAwaitingClassification
+                isAwaitingClassification() {
+                    return this.awaitingClassification;
+                },
+    
                 toJSON() {
                     return {
                         whatsappId: this.whatsappId,
@@ -115,14 +120,14 @@ class ConversationManager {
                     };
                 }
             };
-
+    
             this.conversations.set(whatsappId, conversation);
             
             logInfo('New conversation created', {
                 whatsappId,
                 userPhoneNumber
             });
-
+    
             return conversation;
         } catch (error) {
             logError('Error creating conversation', {
