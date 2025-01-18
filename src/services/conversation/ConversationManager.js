@@ -22,10 +22,10 @@ class ConversationManager {
                 createdAt: new Date(),
                 lastUpdateTime: Date.now(),
                 status: 'active',
-                awaitingClassification: false,  // Inicialmente falso
-                isFirstMessage: true,           // Flag para controlar primer mensaje
+                awaitingClassification: false,
+                messageCount: 0,
+                isFirstMessage: true,
     
-                // Métodos del objeto conversation
                 addMessage(message) {
                     try {
                         if (!message || !message.id || !message.timestamp) {
@@ -46,28 +46,30 @@ class ConversationManager {
                                 messageId: message.id,
                                 content: message.text?.body
                             });
-                            this.isFirstMessage = false;  // Ya no será primer mensaje
-                            this.awaitingClassification = false;  // No clasificar primer mensaje
+                            this.isFirstMessage = false;
+                            this.awaitingClassification = false;
                         } else {
                             logInfo('Procesando mensaje subsiguiente - Activando clasificación', {
                                 messageId: message.id,
-                                content: message.text?.body
+                                content: message.text?.body,
+                                messageCount: this.messageCount + 1
                             });
-                            this.awaitingClassification = true;  // Activar clasificación
+                            this.awaitingClassification = true;
                         }
 
-                        // Agregar mensaje
+                        // Agregar mensaje e incrementar contador
                         this.messages.push({
                             ...message,
                             receivedAt: new Date()
                         });
+                        this.messageCount++;
     
-                        // Actualizar timestamp
                         this.lastUpdateTime = Date.now();
                         
                         logInfo('Message added successfully', {
                             messageId: message.id,
                             conversationId: this.whatsappId,
+                            messageCount: this.messageCount,
                             isFirstMessage: this.isFirstMessage,
                             awaitingClassification: this.awaitingClassification
                         });
@@ -108,7 +110,8 @@ class ConversationManager {
                         logInfo('Metadata updated successfully', {
                             whatsappId: this.whatsappId,
                             category: this.category,
-                            confidence: this.classificationConfidence
+                            confidence: this.classificationConfidence,
+                            messageCount: this.messageCount
                         });
                     } catch (error) {
                         logError('Error updating metadata', {
@@ -121,6 +124,10 @@ class ConversationManager {
     
                 isAwaitingClassification() {
                     return this.awaitingClassification;
+                },
+
+                shouldClassify() {
+                    return !this.isFirstMessage && this.awaitingClassification;
                 },
     
                 toJSON() {
@@ -135,6 +142,7 @@ class ConversationManager {
                         lastUpdateTime: this.lastUpdateTime,
                         status: this.status,
                         awaitingClassification: this.awaitingClassification,
+                        messageCount: this.messageCount,
                         isFirstMessage: this.isFirstMessage
                     };
                 }
@@ -144,7 +152,9 @@ class ConversationManager {
             
             logInfo('New conversation created', {
                 whatsappId,
-                userPhoneNumber
+                userPhoneNumber,
+                messageCount: 0,
+                awaitingClassification: false
             });
     
             return conversation;
