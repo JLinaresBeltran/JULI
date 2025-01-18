@@ -1,65 +1,73 @@
-// Refactor de chatbaseController.js
-
-// Importar configuraciones reales, NO las pruebas
+// src/controllers/chatbaseController.js
 const { getChatbaseConfig } = require('../config/chatbase');
 const axios = require('axios');
+const { logInfo, logError } = require('../utils/logger');
 
-// Función para manejar mensajes reales a Chatbase
 const sendChatbaseMessage = async (serviceName, userMessage) => {
     try {
         const config = getChatbaseConfig(serviceName);
 
+        // Validar mensaje del usuario
+        if (!userMessage || typeof userMessage !== 'string') {
+            throw new Error('Invalid user message provided.');
+        }
+
         const payload = {
-            messages: [
-                { content: userMessage, role: 'user' },
-            ],
+            messages: [{ content: userMessage, role: 'user' }],
+            chatbotId: config.chatbotId,
+            conversationId: `conversation-${serviceName}-${Date.now()}` // Generar ID único
         };
 
-        const response = await axios.post(config.apiUrl, payload, {
-            headers: { Authorization: `Bearer ${config.apiKey}` },
+        logInfo('Sending message to Chatbase', {
+            service: serviceName,
+            payload: payload
+        });
+
+        const response = await axios.post(`${config.endpoint}/chat`, payload, {
+            headers: {
+                Authorization: `Bearer ${config.apiKey}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        logInfo('Chatbase response received', {
+            service: serviceName,
+            status: response.status
         });
 
         return response.data;
     } catch (error) {
-        console.error('Error al enviar mensaje a Chatbase:', error.message);
-        throw error;
+        logError('Error sending message to Chatbase', {
+            error: error.message,
+            serviceName,
+            responseError: error.response?.data,
+            status: error.response?.status
+        });
+
+        // Retornar respuesta genérica en caso de error
+        return {
+            text: 'En este momento no puedo procesar tu solicitud. Por favor, intenta nuevamente más tarde.'
+        };
     }
 };
 
-// Handlers para los endpoints
-const handleServiciosPublicos = async (req, res) => {
-    try {
-        const userMessage = req.body.message;
-        const response = await sendChatbaseMessage('servicios_publicos', userMessage);
-        res.json(response);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+// Handlers específicos por servicio
+const handleServiciosPublicos = async (message) => {
+    return await sendChatbaseMessage('servicios_publicos', message);
 };
 
-const handleTelecomunicaciones = async (req, res) => {
-    try {
-        const userMessage = req.body.message;
-        const response = await sendChatbaseMessage('telecomunicaciones', userMessage);
-        res.json(response);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+const handleTelecomunicaciones = async (message) => {
+    return await sendChatbaseMessage('telecomunicaciones', message);
 };
 
-const handleTransporteAereo = async (req, res) => {
-    try {
-        const userMessage = req.body.message;
-        const response = await sendChatbaseMessage('transporte_aereo', userMessage);
-        res.json(response);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+const handleTransporteAereo = async (message) => {
+    return await sendChatbaseMessage('transporte_aereo', message);
 };
 
-// Exportar controladores
 module.exports = {
     handleServiciosPublicos,
     handleTelecomunicaciones,
     handleTransporteAereo,
+    // Exportar función principal para tests
+    sendChatbaseMessage
 };
