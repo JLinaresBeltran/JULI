@@ -22,7 +22,8 @@ class ConversationManager {
                 createdAt: new Date(),
                 lastUpdateTime: Date.now(),
                 status: 'active',
-                awaitingClassification: true,
+                awaitingClassification: false,  // Inicialmente falso
+                isFirstMessage: true,           // Flag para controlar primer mensaje
     
                 // Métodos del objeto conversation
                 addMessage(message) {
@@ -39,6 +40,22 @@ class ConversationManager {
                             return false;
                         }
     
+                        // Manejar primer mensaje vs mensajes subsiguientes
+                        if (this.isFirstMessage) {
+                            logInfo('Procesando primer mensaje - Solo bienvenida', {
+                                messageId: message.id,
+                                content: message.text?.body
+                            });
+                            this.isFirstMessage = false;  // Ya no será primer mensaje
+                            this.awaitingClassification = false;  // No clasificar primer mensaje
+                        } else {
+                            logInfo('Procesando mensaje subsiguiente - Activando clasificación', {
+                                messageId: message.id,
+                                content: message.text?.body
+                            });
+                            this.awaitingClassification = true;  // Activar clasificación
+                        }
+
                         // Agregar mensaje
                         this.messages.push({
                             ...message,
@@ -50,7 +67,9 @@ class ConversationManager {
                         
                         logInfo('Message added successfully', {
                             messageId: message.id,
-                            conversationId: this.whatsappId
+                            conversationId: this.whatsappId,
+                            isFirstMessage: this.isFirstMessage,
+                            awaitingClassification: this.awaitingClassification
                         });
                         
                         return true;
@@ -100,7 +119,6 @@ class ConversationManager {
                     }
                 },
     
-                // Agregar el método isAwaitingClassification
                 isAwaitingClassification() {
                     return this.awaitingClassification;
                 },
@@ -116,7 +134,8 @@ class ConversationManager {
                         createdAt: this.createdAt,
                         lastUpdateTime: this.lastUpdateTime,
                         status: this.status,
-                        awaitingClassification: this.awaitingClassification
+                        awaitingClassification: this.awaitingClassification,
+                        isFirstMessage: this.isFirstMessage
                     };
                 }
             };
