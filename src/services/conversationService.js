@@ -83,8 +83,9 @@ class ConversationService extends ConversationEvents {
             if (!ConversationValidator.validateMessage(message)) {
                 throw new Error('Mensaje inválido');
             }
-
+    
             let conversation = this.manager.get(message.from);
+            let isFirstMessage = !conversation;
             
             if (!conversation && options.createIfNotExists) {
                 conversation = this.manager.create(message.from, message.from);
@@ -93,89 +94,87 @@ class ConversationService extends ConversationEvents {
                     context: 'processIncomingMessage'
                 });
             }
-
+    
             if (!conversation) {
                 throw new Error('No existe una conversación activa');
             }
-
-            // Procesar clasificación para mensajes de texto
+    
+            // Procesar el mensaje
             if (message.type === 'text' && message.text?.body) {
                 try {
-                    const queryClassifierService = require('./queryClassifierService');
-                    const chatbaseController = require('../controllers/chatbaseController');
-
-                    logInfo('Clasificando consulta', {
-                        text: message.text.body
-                    });
-
-                    // Clasificar el mensaje
-                    const classification = queryClassifierService.classifyQuery(message.text.body);
-                    
-                    logInfo('Resultado de clasificación', {
-                        category: classification.category,
-                        confidence: classification.confidence,
-                        scores: classification.scores
-                    });
-
-                    // Actualizar metadata de la conversación
-                    await this.updateConversationMetadata(conversation.whatsappId, {
-                        category: classification.category,
-                        classificationConfidence: classification.confidence,
-                        lastMessage: message.text.body
-                    });
-
-                    // Mapeo de handlers de Chatbase
-                    const handlers = {
-                        servicios_publicos: chatbaseController.handleServiciosPublicos,
-                        telecomunicaciones: chatbaseController.handleTelecomunicaciones,
-                        transporte_aereo: chatbaseController.handleTransporteAereo
-                    };
-
-                    const handler = handlers[classification.category];
-                    if (handler) {
-                        logInfo('Procesando mensaje con Chatbase', {
-                            category: classification.category,
-                            messageId: message.id
+                    // Si es el primer mensaje, solo activar el flujo de bienvenida
+                    if (isFirstMessage) {
+                        logInfo('Primer mensaje recibido - Activando mensaje de bienvenida', {
+                            userId: message.from,
+                            message: message.text.body
                         });
-
-                        const chatbaseResponse = await handler(message.text.body);
-
-                        if (chatbaseResponse && chatbaseResponse.text) {
-                            await whatsappService.sendTextMessage(
-                                message.from,
-                                chatbaseResponse.text
-                            );
-
-                            logInfo('Respuesta de Chatbase enviada', {
-                                category: classification.category,
-                                messageId: message.id,
-                                responsePreview: chatbaseResponse.text.substring(0, 100)
-                            });
-                        } else {
-                            throw new Error('Respuesta de Chatbase inválida');
-                        }
                     } else {
-                        logError('Handler no encontrado para categoría', {
-                            category: classification.category,
-                            messageId: message.id
+                        // Si no es el primer mensaje, proceder con la clasificación
+                        const queryClassifierService = require('./queryClassifierService');
+                        const chatbaseController = require('../controllers/chatbaseController');
+                        
+                        logInfo('Clasificando consulta del usuario', {
+                            text: message.text.body
                         });
+    
+                        // Clasificar el mensaje
+                        const classification = queryClassifierService.classifyQuery(message.text.body);
+                        
+                        logInfo('Resultado de clasificación', {
+                            category: classification.category,
+                            confidence: classification.confidence,
+                            scores: classification.scores
+                        });
+    
+                        // Actualizar metadata de la conversación
+                        await this.updateConversationMetadata(conversation.whatsappId, {
+                            category: classification.category,
+                            classificationConfidence: classification.confidence,
+                            lastMessage: message.text.body
+                        });
+    
+                        // Procesar con Chatbase según la categoría
+                        const handlers = {
+                            servicios_publicos: chatbaseController.handleServiciosPublicos,
+                            telecomunicaciones: chatbaseController.handleTelecomunicaciones,
+                            transporte_aereo: chatbaseController.handleTransporteAereo
+                        };
+    
+                        const handler = handlers[classification.category];
+                        if (handler) {
+                            logInfo('Procesando mensaje con Chatbase', {
+                                category: classification.category,
+                                messageId: message.id
+                            });
+    
+                            const chatbaseResponse = await handler(message.text.body);
+    
+                            if (chatbaseResponse && chatbaseResponse.text) {
+                                await whatsappService.sendTextMessage(
+                                    message.from,
+                                    chatbaseResponse.text
+                                );
+    
+                                logInfo('Respuesta de Chatbase enviada', {
+                                    category: classification.category,
+                                    messageId: message.id,
+                                    responsePreview: chatbaseResponse.text.substring(0, 100)
+                                });
+                            } else {
+                                throw new Error('Respuesta de Chatbase inválida');
+                            }
+                        }
                     }
                 } catch (error) {
-                    logError('Error en la clasificación o procesamiento del mensaje', {
+                    logError('Error en el procesamiento del mensaje', {
                         error: error.message,
                         messageId: message.id,
                         stack: error.stack
                     });
-
-                    // Enviar mensaje de error al usuario
-                    await whatsappService.sendTextMessage(
-                        message.from,
-                        'Lo siento, en este momento estoy teniendo dificultades para procesar tu consulta. Por favor, intenta nuevamente en unos minutos.'
-                    );
                 }
             }
-
-            // Procesar el mensaje normalmente
+    
+            // Agregar el mensaje a la conversación y procesar normalmente
             if (conversation.addMessage(message)) {
                 await ConversationProcessor.processMessage(message, conversation);
                 this.emit('messageReceived', {
@@ -183,7 +182,7 @@ class ConversationService extends ConversationEvents {
                     message
                 });
             }
-
+    
             return conversation;
         } catch (error) {
             logError('Error procesando mensaje entrante', {
