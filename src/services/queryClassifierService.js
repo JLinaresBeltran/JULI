@@ -10,109 +10,97 @@ class QueryClassifierService {
             UNKNOWN: 'unknown'
         };
 
-        // Palabras clave para clasificación con contextos
-        this.categoryPatterns = {
-            [this.categories.SERVICIOS_PUBLICOS]: {
-                keywords: [
-                    'agua', 'luz', 'electricidad', 'gas', 'factura', 'recibo',
-                    'servicio público', 'corte', 'reconexión', 'medidor'
-                ],
-                contexts: [
-                    'cobro excesivo', 'alto consumo', 'corte injustificado',
-                    'mala facturación', 'error en lectura', 'problema con el servicio'
-                ]
-            },
-            [this.categories.TELECOMUNICACIONES]: {
-                keywords: [
-                    'internet', 'teléfono', 'celular', 'móvil', 'plan', 'datos',
-                    'señal', 'cobertura', 'telefonía', 'wifi', 'router', 'modem'
-                ],
-                contexts: [
-                    'mala señal', 'cobro indebido', 'cambio de plan', 'falla servicio',
-                    'velocidad lenta', 'cancelar servicio', 'incumplimiento'
-                ]
-            },
-            [this.categories.TRANSPORTE_AEREO]: {
-                keywords: [
-                    'vuelo', 'avión', 'aerolínea', 'viaje', 'maleta', 'equipaje',
-                    'boleto', 'tiquete', 'reserva', 'aeropuerto'
-                ],
-                contexts: [
-                    'cancelación', 'retraso', 'pérdida equipaje', 'sobreventa',
-                    'cambio itinerario', 'compensación', 'reclamo'
-                ]
-            }
+        this.keywords = {
+            [this.categories.SERVICIOS_PUBLICOS]: [
+                'agua', 'luz', 'electricidad', 'gas', 'factura', 'recibo',
+                'servicio público', 'corte', 'reconexión', 'medidor', 'consumo'
+            ],
+            [this.categories.TELECOMUNICACIONES]: [
+                'internet', 'teléfono', 'celular', 'móvil', 'plan', 'datos',
+                'señal', 'cobertura', 'telefonía', 'wifi', 'router', 'modem'
+            ],
+            [this.categories.TRANSPORTE_AEREO]: [
+                'vuelo', 'avión', 'aerolínea', 'viaje', 'maleta', 'equipaje',
+                'boleto', 'tiquete', 'reserva', 'aeropuerto', 'pasaje'
+            ]
         };
     }
 
     async classifyQuery(text) {
         try {
-            logInfo('Iniciando clasificación de consulta', { textLength: text.length });
+            if (!text) {
+                return this._createResponse(this.categories.UNKNOWN, 0);
+            }
+
+            logInfo('Iniciando clasificación de consulta', { 
+                textLength: text.length 
+            });
             
             const normalizedText = text.toLowerCase().trim();
             const scores = {};
 
             // Calcular puntuación para cada categoría
-            for (const [category, patterns] of Object.entries(this.categoryPatterns)) {
-                scores[category] = this._calculateDetailedScore(normalizedText, patterns);
+            for (const [category, keywords] of Object.entries(this.keywords)) {
+                scores[category] = this._calculateScore(normalizedText, keywords);
             }
 
             // Obtener la categoría con mayor puntuación
             const [topCategory] = Object.entries(scores)
-                .sort(([,a], [,b]) => b.totalScore - a.totalScore);
+                .sort(([,a], [,b]) => b - a);
 
-            const result = {
-                category: topCategory[1].totalScore >= 1 ? topCategory[0] : this.categories.UNKNOWN,
-                confidence: topCategory[1].totalScore,
-                details: {
-                    keywordMatches: topCategory[1].keywordMatches,
-                    contextMatches: topCategory[1].contextMatches,
-                    allScores: scores
-                }
-            };
+            // Solo clasificar si la puntuación supera el umbral
+            const finalCategory = topCategory[1] >= 1 ? 
+                topCategory[0] : this.categories.UNKNOWN;
 
-            logInfo('Clasificación completada', {
-                category: result.category,
-                confidence: result.confidence,
-                textPreview: normalizedText.substring(0, 50)
+            const response = this._createResponse(finalCategory, topCategory[1], scores);
+
+            logInfo('Clasificación completada', { 
+                category: response.category,
+                confidence: response.confidence,
+                textPreview: normalizedText.substring(0, 50) 
             });
 
-            return result;
+            return response;
 
         } catch (error) {
             logError('Error en clasificación de consulta', {
                 error: error.message,
                 textLength: text?.length
             });
-            return {
-                category: this.categories.UNKNOWN,
-                confidence: 0,
-                error: error.message
-            };
+            return this._createResponse(this.categories.UNKNOWN, 0, null, error.message);
         }
     }
 
-    _calculateDetailedScore(text, patterns) {
-        const keywordMatches = patterns.keywords
-            .filter(keyword => text.includes(keyword))
-            .map(keyword => ({ term: keyword, type: 'keyword' }));
-
-        const contextMatches = patterns.contexts
-            .filter(context => text.includes(context))
-            .map(context => ({ term: context, type: 'context' }));
-
-        const keywordScore = keywordMatches.length * 1.0;
-        const contextScore = contextMatches.length * 0.5;
-
-        return {
-            totalScore: keywordScore + contextScore,
-            keywordMatches,
-            contextMatches,
-            scores: {
-                keywords: keywordScore,
-                context: contextScore
+    _calculateScore(text, keywords) {
+        return keywords.reduce((score, keyword) => {
+            if (text.includes(keyword)) {
+                // Coincidencia exacta
+                score += 1;
+            } else if (text.split(' ').some(word => 
+                word.includes(keyword) || keyword.includes(word))) {
+                // Coincidencia parcial
+                score += 0.5;
             }
+            return score;
+        }, 0);
+    }
+
+    _createResponse(category, confidence, scores = null, error = null) {
+        const response = {
+            category,
+            confidence: Number(confidence.toFixed(2)),
+            timestamp: new Date().toISOString()
         };
+
+        if (scores) {
+            response.details = { scores };
+        }
+
+        if (error) {
+            response.error = error;
+        }
+
+        return response;
     }
 
     getChatbaseConfig(category) {

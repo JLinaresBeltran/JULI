@@ -14,30 +14,27 @@ class ConversationProcessor {
                 };
             }
 
-            const processors = {
-                text: this.processTextMessage,
-                audio: this.processAudioMessage,
-                document: this.processDocumentMessage
-            };
-
-            const processor = processors[message.type];
-            if (!processor) {
-                throw new Error(`Tipo de mensaje no soportado: ${message.type}`);
-            }
-
             // Actualizar intentos de procesamiento
             message.attempts = (message.attempts || 0) + 1;
             message.lastAttempt = new Date();
 
-            // Procesar el mensaje
-            await processor.call(this, message, conversation);
+            // Procesar según el tipo de mensaje
+            if (message.type === 'text') {
+                await this.processTextMessage(message, conversation);
+            } else if (message.type === 'audio') {
+                await this.processAudioMessage(message, conversation);
+            } else if (message.type === 'document') {
+                await this.processDocumentMessage(message, conversation);
+            } else {
+                throw new Error(`Tipo de mensaje no soportado: ${message.type}`);
+            }
             
             // Marcar como procesado exitosamente
             message.processed = true;
             message.error = null;
 
             // Registrar en el historial de procesamiento
-            conversation.metadata.processingHistory.push({
+            this._addToProcessingHistory(conversation, {
                 messageId: message.id,
                 type: message.type,
                 timestamp: new Date(),
@@ -47,24 +44,7 @@ class ConversationProcessor {
             return true;
 
         } catch (error) {
-            message.error = error.message;
-            logError('Error procesando mensaje', {
-                messageId: message.id,
-                type: message.type,
-                error: error.message
-            });
-
-            // Registrar el error en el historial
-            if (conversation.metadata?.processingHistory) {
-                conversation.metadata.processingHistory.push({
-                    messageId: message.id,
-                    type: message.type,
-                    timestamp: new Date(),
-                    success: false,
-                    error: error.message
-                });
-            }
-
+            this._handleProcessingError(message, conversation, error);
             return false;
         }
     }
@@ -76,14 +56,13 @@ class ConversationProcessor {
 
             logInfo('Procesando mensaje de texto', {
                 messageId: message.id,
-                contentLength: content.length
+                contentLength: content?.length
             });
 
             // Verificar si es el primer mensaje
-            const isFirstMessage = this._isFirstMessage(conversation);
-            if (isFirstMessage) {
-                logInfo('Procesando primer mensaje - Solo bienvenida');
-                return true;
+            if (this._isFirstMessage(conversation)) {
+                logInfo('Procesando primer mensaje - Solo bienvenida', { content });
+                return;
             }
 
             // Clasificar mensaje subsiguiente
@@ -91,6 +70,10 @@ class ConversationProcessor {
             const classification = await queryClassifierService.classifyQuery(content);
 
             // Almacenar resultado de clasificación
+            if (!conversation.metadata.classifications) {
+                conversation.metadata.classifications = [];
+            }
+
             conversation.metadata.classifications.push({
                 messageId: message.id,
                 timestamp: new Date(),
@@ -110,10 +93,12 @@ class ConversationProcessor {
                 confidence: classification.confidence
             });
 
-            return true;
-
         } catch (error) {
-            throw new Error(`Error procesando mensaje de texto: ${error.message}`);
+            logError('Error en procesamiento de mensaje de texto', {
+                messageId: message.id,
+                error: error.message
+            });
+            throw error;
         }
     }
 
@@ -124,7 +109,11 @@ class ConversationProcessor {
                 audioId: message.audio?.id
             });
 
-            // Implementar la transcripción real aquí
+            if (!conversation.metadata.audioTranscriptions) {
+                conversation.metadata.audioTranscriptions = [];
+            }
+
+            // Aquí iría la lógica de transcripción real
             const mockTranscription = "Transcripción simulada para pruebas";
             
             conversation.metadata.audioTranscriptions.push({
@@ -133,9 +122,12 @@ class ConversationProcessor {
                 timestamp: new Date()
             });
 
-            return true;
         } catch (error) {
-            throw new Error(`Error procesando mensaje de audio: ${error.message}`);
+            logError('Error en procesamiento de audio', {
+                messageId: message.id,
+                error: error.message
+            });
+            throw error;
         }
     }
 
@@ -145,14 +137,43 @@ class ConversationProcessor {
                 messageId: message.id,
                 documentId: message.document?.id
             });
-            return true;
         } catch (error) {
-            throw new Error(`Error procesando documento: ${error.message}`);
+            logError('Error en procesamiento de documento', {
+                messageId: message.id,
+                error: error.message
+            });
+            throw error;
         }
     }
 
     static _isFirstMessage(conversation) {
         return !conversation.messages || conversation.messages.length === 0;
+    }
+
+    static _handleProcessingError(message, conversation, error) {
+        message.error = error.message;
+        message.processed = false;
+
+        logError('Error procesando mensaje', {
+            messageId: message.id,
+            type: message.type,
+            error: error.message
+        });
+
+        this._addToProcessingHistory(conversation, {
+            messageId: message.id,
+            type: message.type,
+            timestamp: new Date(),
+            success: false,
+            error: error.message
+        });
+    }
+
+    static _addToProcessingHistory(conversation, entry) {
+        if (!conversation.metadata.processingHistory) {
+            conversation.metadata.processingHistory = [];
+        }
+        conversation.metadata.processingHistory.push(entry);
     }
 }
 
