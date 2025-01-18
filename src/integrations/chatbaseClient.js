@@ -1,7 +1,7 @@
 // src/integrations/chatbaseClient.js
-const axios = require('axios');
 const { logInfo, logError } = require('../utils/logger');
 const { getChatbaseConfig } = require('../config/chatbase');
+const axios = require('axios');
 
 class ChatbaseClient {
     constructor() {
@@ -13,51 +13,41 @@ class ChatbaseClient {
         if (this.initialized) return;
         
         try {
-            // Verificar configuraciones de servicios críticos
+            // Verificar que podemos obtener configuraciones para todos los servicios
             const services = ['servicios_publicos', 'telecomunicaciones', 'transporte_aereo'];
             services.forEach(service => {
                 const config = getChatbaseConfig(service);
-                
-                // Validación exhaustiva de configuración
                 if (!config.apiKey || !config.chatbotId || !config.endpoint) {
-                    throw new Error(`Configuración incompleta para servicio: ${service}. 
-                        Verificar apiKey, chatbotId y endpoint.`);
+                    throw new Error(`Invalid configuration for service: ${service}`);
                 }
             });
 
             this.initialized = true;
-            logInfo('Cliente Chatbase inicializado correctamente', { 
-                serviciosVerificados: services.length 
-            });
+            logInfo('Chatbase client initialized successfully');
         } catch (error) {
-            logError('Error inicializando cliente Chatbase', { 
-                error: error.message,
-                esPrimerIntento: !this.initialized
-            });
+            logError('Error initializing Chatbase client', { error: error.message });
             throw error;
         }
     }
 
     async getResponse(message, serviceType) {
         try {
-            // Asegurar inicialización
             await this.initialize();
 
             // Obtener configuración específica del servicio
             const config = getChatbaseConfig(serviceType);
 
-            // Generar o recuperar ID de chat
-            const chatId = this._getChatId(serviceType);
-
-            // Registro detallado de la solicitud
             logInfo('Solicitando respuesta a Chatbase', { 
                 serviceType,
-                chatId,
                 messageLength: message.length,
                 chatbotId: config.chatbotId
             });
 
-            // Realizar solicitud a Chatbase
+            // Preparar el stream ID único para la conversación
+            const streamId = this.activeChats.get(serviceType) || this._generateStreamId();
+            this.activeChats.set(serviceType, streamId);
+
+            // Realizar la petición a Chatbase
             const response = await axios({
                 method: 'post',
                 url: `${config.endpoint}/stream`,
@@ -66,51 +56,47 @@ class ChatbaseClient {
                     'Content-Type': 'application/json'
                 },
                 data: {
-                    messages: [{
-                        role: "user",
-                        content: message
-                    }],
-                    chatId: chatId,
+                    messages: [
+                        {
+                            role: "user",
+                            content: message
+                        }
+                    ],
+                    chatId: streamId,
                     chatbotId: config.chatbotId,
                     stream: false
-                },
-                timeout: 10000 // Añadir timeout para prevenir solicitudes largas
+                }
             });
 
-            // Validación rigurosa de la respuesta
+            // Validar y procesar la respuesta
             if (!response.data || !response.data.text) {
-                throw new Error('Respuesta inválida de Chatbase: Contenido faltante');
+                throw new Error('Invalid response from Chatbase');
             }
 
-            // Preparar resultado con metadatos completos
             const result = {
                 content: response.data.text,
                 metadata: {
                     category: serviceType,
-                    chatId: chatId,
-                    timestamp: new Date().toISOString(),
-                    responseLength: response.data.text.length
+                    streamId,
+                    timestamp: new Date().toISOString()
                 }
             };
 
-            // Registro de respuesta exitosa
             logInfo('Respuesta de Chatbase recibida', {
                 serviceType,
-                chatId,
-                responseLength: result.content.length
+                responseLength: result.content.length,
+                streamId
             });
 
             return result;
 
         } catch (error) {
-            // Manejo detallado de errores
-            logError('Error obteniendo respuesta de Chatbase', {
+            logError('Error getting Chatbase response', {
                 error: error.message,
-                serviceType,
-                esErrorDeAutenticacion: error.response?.status === 401 || error.response?.status === 403
+                serviceType
             });
             
-            // Reiniciar estado si hay problemas de autenticación
+            // Si el error es de autenticación o configuración, reinicializar
             if (error.response?.status === 401 || error.response?.status === 403) {
                 this.initialized = false;
             }
@@ -119,37 +105,20 @@ class ChatbaseClient {
         }
     }
 
-    // Método para gestionar IDs de chat de manera más robusta
-    _getChatId(serviceType) {
-        if (!this.activeChats.has(serviceType)) {
-            this.activeChats.set(serviceType, this._generateChatId());
-        }
-        return this.activeChats.get(serviceType);
-    }
-
-    // Generación de ID más aleatoria y única
-    _generateChatId() {
-        return `chatbase_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
-    }
-
-    // Método para reiniciar chat con mejor manejo
     async resetChat(serviceType) {
         try {
-            if (this.activeChats.has(serviceType)) {
-                this.activeChats.delete(serviceType);
-                logInfo('Chat reiniciado correctamente', { 
-                    serviceType,
-                    timestamp: new Date().toISOString()
-                });
-            } else {
-                logInfo('No hay chat activo para reiniciar', { serviceType });
-            }
+            this.activeChats.delete(serviceType);
+            logInfo('Chat reset successful', { serviceType });
         } catch (error) {
-            logError('Error al reiniciar chat', { 
+            logError('Error resetting chat', { 
                 error: error.message,
                 serviceType 
             });
         }
+    }
+
+    _generateStreamId() {
+        return `${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
     }
 }
 

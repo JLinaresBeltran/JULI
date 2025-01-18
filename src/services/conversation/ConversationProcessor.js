@@ -1,8 +1,6 @@
 // src/services/conversation/ConversationProcessor.js
 const { logError, logInfo } = require('../../utils/logger');
 const queryClassifierService = require('../queryClassifierService');
-const chatbaseClient = require('../integrations/chatbaseClient');
-const whatsappService = require('../whatsappService');
 
 class ConversationProcessor {
     static async processMessage(message, conversation) {
@@ -75,14 +73,10 @@ class ConversationProcessor {
             // Almacenar resultado de clasificación
             this._storeClassification(conversation, message.id, classification);
 
-            // Procesar respuesta de Chatbase si no es una categoría desconocida
-            if (classification.category !== 'unknown') {
-                await this._processChatbaseResponse(conversation, content, classification);
-            }
-
-            logInfo('Mensaje procesado completamente', {
+            logInfo('Mensaje clasificado exitosamente', {
                 messageId: message.id,
                 category: classification.category,
+                confidence: classification.confidence,
                 conversationId: conversation.id
             });
 
@@ -200,49 +194,6 @@ class ConversationProcessor {
 
     static _isFirstMessage(conversation) {
         return !conversation.messages || conversation.messages.length === 0;
-    }
-
-    static async _processChatbaseResponse(conversation, message, classification) {
-        try {
-            if (classification.category === 'unknown') {
-                logInfo('Mensaje clasificado como unknown, no se procesa con Chatbase');
-                return;
-            }
-            logInfo('Procesando respuesta de Chatbase', {
-                category: classification.category,
-                conversationId: conversation.id
-            });
-            const chatbaseResponse = await chatbaseClient.getResponse(
-                message,
-                classification.category
-            );
-            if (chatbaseResponse && chatbaseResponse.content) {
-                // Enviar respuesta por WhatsApp
-                await whatsappService.sendMessage({
-                    to: conversation.whatsappId,
-                    type: 'text',
-                    text: { body: chatbaseResponse.content }
-                });
-                // Registrar respuesta en el historial
-                this._addToProcessingHistory(conversation, {
-                    type: 'chatbase_response',
-                    category: classification.category,
-                    timestamp: new Date(),
-                    responseLength: chatbaseResponse.content.length
-                });
-                logInfo('Respuesta de Chatbase enviada', {
-                    conversationId: conversation.id,
-                    category: classification.category
-                });
-            }
-        } catch (error) {
-            logError('Error procesando respuesta de Chatbase', {
-                error: error.message,
-                category: classification.category,
-                conversationId: conversation.id
-            });
-            throw error;
-        }
     }
 }
 
