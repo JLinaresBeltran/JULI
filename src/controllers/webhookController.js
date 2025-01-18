@@ -1,12 +1,9 @@
-// src/controllers/webhookController.js
-
 const conversationService = require('../services/conversationService');
 const whatsappService = require('../services/whatsappService');
 const welcomeHandlerService = require('../services/welcomeHandlerService');
 const WebSocketManager = require('../services/websocketService');
 const { logInfo, logError } = require('../utils/logger');
 
-// Funciones auxiliares mejoradas
 function validateWebhookPayload(body) {
     if (!body || !body.object || !Array.isArray(body.entry)) {
         return false;
@@ -16,44 +13,28 @@ function validateWebhookPayload(body) {
 
 function validateMessage(message, context) {
     try {
-        // Validación básica de estructura
         if (!message || !message.id || !message.from || !message.timestamp) {
-            logError('Invalid message structure', { message });
+            logError('Invalid message structure');
             return false;
         }
 
-        // Validación del contexto
         if (!context || !context.metadata || !context.contacts) {
-            logError('Invalid message context', { context });
+            logError('Invalid message context');
             return false;
         }
 
-        // Validación específica por tipo de mensaje
         switch (message.type) {
             case 'text':
-                if (!message.text?.body) {
-                    logError('Invalid text message structure', { message });
-                    return false;
-                }
+                if (!message.text?.body) return false;
                 break;
             case 'audio':
-                if (!message.audio?.id) {
-                    logError('Invalid audio message structure', { message });
-                    return false;
-                }
+                if (!message.audio?.id) return false;
                 break;
         }
 
-        // Validación del formato del número de teléfono
-        const phoneRegex = /^[0-9]{10,15}$/;
-        if (!phoneRegex.test(message.from)) {
-            logError('Invalid phone number format', { from: message.from });
-            return false;
-        }
-
-        return true;
+        return /^[0-9]{10,15}$/.test(message.from);
     } catch (error) {
-        logError('Error in message validation', { error: error.message });
+        logError('Message validation error', { error: error.message });
         return false;
     }
 }
@@ -74,12 +55,9 @@ function formatMessage(message, context) {
             }
         };
 
-        // Mantener la estructura original del mensaje
         switch (message.type) {
             case 'text':
-                formattedMessage.text = {
-                    body: message.text.body
-                };
+                formattedMessage.text = { body: message.text.body };
                 formattedMessage.isGreeting = isGreeting(message.text.body);
                 break;
             case 'audio':
@@ -90,98 +68,55 @@ function formatMessage(message, context) {
                 };
                 break;
             default:
-                formattedMessage.content = {
-                    type: message.type,
-                    raw: message
-                };
+                formattedMessage.content = { type: message.type, raw: message };
         }
 
         return formattedMessage;
     } catch (error) {
-        logError('Error formatting message', {
-            error: error.message,
-            message,
-            context
-        });
+        logError('Message format error', { error: error.message });
         throw error;
     }
 }
 
 function isGreeting(text) {
-    const greetings = [
-        'hola',
-        'buenos días',
-        'buen día',
-        'buenas',
-        'buenas tardes',
-        'buenas noches',
-        'hi',
-        'hello'
-    ];
-    return text && greetings.some(greeting => 
-        text.toLowerCase().trim().includes(greeting.toLowerCase())
-    );
+    const greetings = ['hola', 'buenos días', 'buen día', 'buenas', 'buenas tardes', 'buenas noches', 'hi', 'hello'];
+    return text && greetings.some(greeting => text.toLowerCase().trim().includes(greeting.toLowerCase()));
 }
 
 const webhookController = {
     async verifyWebhook(req, res) {
-        const mode = req.query['hub.mode'];
-        const token = req.query['hub.verify_token'];
-        const challenge = req.query['hub.challenge'];
-        const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-
-        logInfo('Webhook verification request', {
-            mode,
-            tokenMatch: token === VERIFY_TOKEN,
-            hasChallenge: !!challenge
-        });
-
-        if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-            logInfo('Webhook verified successfully');
+        const { mode, token, challenge } = {
+            mode: req.query['hub.mode'],
+            token: req.query['hub.verify_token'],
+            challenge: req.query['hub.challenge']
+        };
+        
+        if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
             return res.status(200).send(challenge);
         }
-
-        logError('Webhook verification failed');
         return res.status(403).send('Forbidden');
     },
 
     async receiveMessage(req, res) {
         try {
-            console.log('🔄 Webhook payload:', JSON.stringify(req.body, null, 2));
-            logInfo('Webhook payload received', { body: req.body });
-
             if (!validateWebhookPayload(req.body)) {
-                throw new Error('Invalid webhook payload structure');
+                throw new Error('Invalid webhook payload');
             }
 
             const results = await this._processEntries(req.body.entry);
-            
-            logInfo('Webhook processing completed', { results });
+            logInfo('Webhook processed', { results });
             return res.status(200).send('EVENT_RECEIVED');
         } catch (error) {
-            logError('Error processing webhook', { 
-                error: error.message,
-                stack: error.stack
-            });
+            logError('Webhook error', { error: error.message });
             return res.status(200).send('EVENT_RECEIVED');
         }
     },
 
     async _processEntries(entries) {
-        console.log('📝 Processing entries:', entries.length);
         const results = { processed: 0, errors: 0, details: [] };
 
         for (const entry of entries) {
             for (const change of entry.changes) {
-                console.log('🔄 Processing change:', {
-                    field: change.field,
-                    hasMessages: !!change.value?.messages,
-                    hasStatuses: !!change.value?.statuses,
-                    metadata: change.value?.metadata,
-                    type: change.value?.conversation?.origin?.type
-                });
-
-                // Detectar inicio de conversación
                 if (this._isConversationStart(change)) {
                     try {
                         const userId = change.value.contacts[0].wa_id;
@@ -189,12 +124,11 @@ const webhookController = {
                         results.processed++;
                         continue;
                     } catch (error) {
-                        console.error('❌ Error handling conversation start:', error);
+                        logError('Welcome flow error', { error: error.message });
                         results.errors++;
                     }
                 }
 
-                // Procesar mensajes normalmente
                 if (change.value?.messages) {
                     await this._processMessages(change.value.messages, change.value, results);
                 }
@@ -220,42 +154,18 @@ const webhookController = {
 
     async _handleNewUserWelcome(userId, context) {
         try {
-            console.log('✨ Starting welcome flow for:', userId);
             const userName = context?.contacts?.[0]?.profile?.name || 'Usuario';
-
-            // Verificar si ya existe conversación (doble check)
             const existingConversation = await conversationService.getConversation(userId);
-            if (existingConversation) {
-                console.log('ℹ️ User already has conversation:', userId);
-                return existingConversation;
-            }
-
-            // 1. Enviar mensaje de bienvenida primero
-            console.log('📬 Sending welcome message to:', userId);
-            const welcomeResult = await welcomeHandlerService.handleInitialInteraction(
-                userId,
-                userName,
-                context
-            );
-
-            // 2. Crear la conversación después del mensaje de bienvenida
-            const conversation = await conversationService.createConversation(
-                userId,
-                userId
-            );
-
-            console.log('📝 Conversation created:', conversation.whatsappId);
             
-            // 3. Notificar por WebSocket
+            if (existingConversation) return existingConversation;
+
+            await welcomeHandlerService.handleInitialInteraction(userId, userName, context);
+            const conversation = await conversationService.createConversation(userId, userId);
             this._broadcastUpdates(conversation);
 
             return conversation;
         } catch (error) {
-            console.error('❌ Error in welcome flow:', {
-                error: error.message,
-                userId,
-                stack: error.stack
-            });
+            logError('Welcome flow error', { error: error.message });
             throw error;
         }
     },
@@ -263,69 +173,28 @@ const webhookController = {
     async _processMessages(messages, context, results) {
         for (const message of messages) {
             try {
-                console.log('📨 Processing message:', {
-                    id: message.id,
-                    type: message.type,
-                    from: message.from,
-                    timestamp: message.timestamp,
-                    isText: message.type === 'text',
-                    content: message.type === 'text' ? message.text?.body : undefined,
-                    isNewUser: context?.contacts?.[0] && !conversationService.getConversation(message.from)
-                });
-
-                // Verificar si es un nuevo usuario
                 const conversation = conversationService.getConversation(message.from);
                 const isNewUser = !conversation;
 
-                // Si es un nuevo usuario, manejar el flujo de bienvenida primero
                 if (isNewUser) {
                     await this._handleNewUserWelcome(message.from, context);
                 }
 
-                // Formatear el mensaje usando la función formatMessage
                 const formattedMessage = formatMessage(message, context);
-
-                // Procesar el mensaje
-                const processingOptions = {
+                await conversationService.processIncomingMessage(formattedMessage, {
                     createIfNotExists: true,
                     skipClassification: isNewUser
-                };
+                });
 
-                await conversationService.processIncomingMessage(
-                    formattedMessage,
-                    processingOptions
-                );
-
-                // Marcar como leído y procesar normalmente
                 if (message.type === 'text') {
-                    try {
-                        await whatsappService.markAsRead(
-                            message.id,
-                            context.metadata?.phone_number_id
-                        );
-                        console.log('✓ Message marked as read:', message.id);
-                    } catch (markError) {
-                        console.error('❌ Error marking message as read:', {
-                            error: markError.message,
-                            messageId: message.id
-                        });
-                    }
+                    await whatsappService.markAsRead(message.id, context.metadata?.phone_number_id);
                 }
 
-                // WebSocket notifications
                 this._broadcastUpdates(conversation);
-
-                // Registrar éxito
-                this._addResult(results, message, 'success', {
-                    isFirstInteraction: isNewUser
-                });
+                this._addResult(results, message, 'success', { isFirstInteraction: isNewUser });
 
             } catch (error) {
-                console.error('❌ Error processing message:', {
-                    error: error.message,
-                    messageId: message.id,
-                    type: message.type
-                });
+                logError('Message processing error', { error: error.message });
                 this._addResult(results, message, 'error', error);
             }
         }
@@ -344,15 +213,6 @@ const webhookController = {
     async _processStatuses(statuses, context, results) {
         for (const status of statuses) {
             try {
-                console.log('📊 Processing status:', {
-                    id: status.id,
-                    status: status.status,
-                    recipientId: status.recipient_id,
-                    timestamp: status.timestamp,
-                    conversationType: status.conversation?.origin?.type,
-                    pricing: status.pricing?.category
-                });
-
                 results.processed++;
                 results.details.push({
                     id: status.id,
@@ -360,13 +220,8 @@ const webhookController = {
                     type: 'status',
                     statusValue: status.status
                 });
-
             } catch (error) {
-                console.error('❌ Status processing error:', {
-                    error: error.message,
-                    statusId: status.id,
-                    recipientId: status.recipient_id
-                });
+                logError('Status processing error', { error: error.message });
                 results.errors++;
                 results.details.push({
                     id: status.id,
@@ -383,20 +238,15 @@ const webhookController = {
         if (wsManager) {
             wsManager.broadcastConversationUpdate(conversation);
             wsManager.broadcastConversations();
-            console.log('🔄 WebSocket notifications sent');
         }
     },
 
     async getConversations(req, res) {
         try {
             const conversations = await conversationService.getAllConversations();
-            logInfo('Conversations retrieved', { count: conversations.length });
             return res.status(200).json(conversations);
         } catch (error) {
-            logError('Error retrieving conversations', { 
-                error: error.message,
-                stack: error.stack 
-            });
+            logError('Conversations retrieval error', { error: error.message });
             return res.status(500).json({ error: error.message });
         }
     },
@@ -404,13 +254,9 @@ const webhookController = {
     async getConversationAnalytics(req, res) {
         try {
             const analytics = await conversationService.getConversationAnalytics();
-            logInfo('Analytics generated', { timestamp: new Date().toISOString() });
             return res.status(200).json(analytics);
         } catch (error) {
-            logError('Error generating analytics', { 
-                error: error.message,
-                stack: error.stack 
-            });
+            logError('Analytics error', { error: error.message });
             return res.status(500).json({ error: error.message });
         }
     }
