@@ -1,8 +1,6 @@
 // src/services/conversation/ConversationProcessor.js
 const { logError, logInfo } = require('../../utils/logger');
 const queryClassifierService = require('../queryClassifierService');
-const chatbaseClient = require('../integrations/chatbaseClient');
-const whatsappService = require('../whatsappService');
 
 class ConversationProcessor {
     static async processMessage(message, conversation) {
@@ -75,11 +73,6 @@ class ConversationProcessor {
             // Almacenar resultado de clasificación
             this._storeClassification(conversation, message.id, classification);
 
-            // Si la clasificación fue exitosa (no es UNKNOWN), procesar con Chatbase
-            if (classification.category !== 'unknown' && classification.confidence >= 1) {
-                await this._processChatbaseResponse(conversation, content, classification);
-            }
-
             logInfo('Mensaje clasificado exitosamente', {
                 messageId: message.id,
                 category: classification.category,
@@ -122,10 +115,6 @@ class ConversationProcessor {
             const classification = await queryClassifierService.classifyQuery(mockTranscription);
             this._storeClassification(conversation, message.id, classification);
 
-            if (classification.category !== 'unknown' && classification.confidence >= 1) {
-                await this._processChatbaseResponse(conversation, mockTranscription, classification);
-            }
-
         } catch (error) {
             logError('Error en procesamiento de audio', {
                 messageId: message.id,
@@ -150,47 +139,6 @@ class ConversationProcessor {
             logError('Error en procesamiento de documento', {
                 messageId: message.id,
                 error: error.message,
-                conversationId: conversation.id
-            });
-            throw error;
-        }
-    }
-
-    static async _processChatbaseResponse(conversation, userMessage, classification) {
-        try {
-            // Obtener configuración de Chatbase según la categoría
-            const config = queryClassifierService.getChatbaseConfig(classification.category);
-            
-            // Obtener respuesta de Chatbase
-            const chatbaseResponse = await chatbaseClient.getResponse(userMessage, config);
-            
-            if (chatbaseResponse && chatbaseResponse.content) {
-                // Enviar respuesta por WhatsApp
-                await whatsappService.sendMessage({
-                    to: conversation.whatsappId,
-                    type: 'text',
-                    text: { body: chatbaseResponse.content }
-                });
-
-                // Registrar la respuesta en el historial
-                this._addToProcessingHistory(conversation, {
-                    type: 'chatbase_response',
-                    category: classification.category,
-                    timestamp: new Date(),
-                    success: true,
-                    responseLength: chatbaseResponse.content.length
-                });
-
-                logInfo('Respuesta de Chatbase enviada', {
-                    conversationId: conversation.id,
-                    category: classification.category,
-                    responseLength: chatbaseResponse.content.length
-                });
-            }
-        } catch (error) {
-            logError('Error procesando respuesta de Chatbase', {
-                error: error.message,
-                category: classification.category,
                 conversationId: conversation.id
             });
             throw error;
