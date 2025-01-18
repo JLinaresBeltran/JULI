@@ -85,7 +85,7 @@ class ConversationService extends ConversationEvents {
             }
     
             let conversation = this.manager.get(message.from);
-            let isFirstMessage = !conversation;
+            const isNewConversation = !conversation;
             
             if (!conversation && options.createIfNotExists) {
                 conversation = this.manager.create(message.from, message.from);
@@ -99,21 +99,15 @@ class ConversationService extends ConversationEvents {
                 throw new Error('No existe una conversación activa');
             }
     
-            // Procesar el mensaje
+            // Procesar mensaje de texto
             if (message.type === 'text' && message.text?.body) {
-                try {
-                    // Si es el primer mensaje, solo activar el flujo de bienvenida
-                    if (isFirstMessage) {
-                        logInfo('Primer mensaje recibido - Activando mensaje de bienvenida', {
-                            userId: message.from,
-                            message: message.text.body
-                        });
-                    } else {
-                        // Si no es el primer mensaje, proceder con la clasificación
+                // Solo procesar clasificación si no es el primer mensaje
+                if (!options.skipClassification && conversation.isAwaitingClassification()) {
+                    try {
                         const queryClassifierService = require('./queryClassifierService');
                         const chatbaseController = require('../controllers/chatbaseController');
                         
-                        logInfo('Clasificando consulta del usuario', {
+                        logInfo('Clasificando consulta', {
                             text: message.text.body
                         });
     
@@ -126,11 +120,10 @@ class ConversationService extends ConversationEvents {
                             scores: classification.scores
                         });
     
-                        // Actualizar metadata de la conversación
+                        // Actualizar metadata
                         await this.updateConversationMetadata(conversation.whatsappId, {
                             category: classification.category,
-                            classificationConfidence: classification.confidence,
-                            lastMessage: message.text.body
+                            classificationConfidence: classification.confidence
                         });
     
                         // Procesar con Chatbase según la categoría
@@ -142,13 +135,7 @@ class ConversationService extends ConversationEvents {
     
                         const handler = handlers[classification.category];
                         if (handler) {
-                            logInfo('Procesando mensaje con Chatbase', {
-                                category: classification.category,
-                                messageId: message.id
-                            });
-    
                             const chatbaseResponse = await handler(message.text.body);
-    
                             if (chatbaseResponse && chatbaseResponse.text) {
                                 await whatsappService.sendTextMessage(
                                     message.from,
@@ -160,21 +147,19 @@ class ConversationService extends ConversationEvents {
                                     messageId: message.id,
                                     responsePreview: chatbaseResponse.text.substring(0, 100)
                                 });
-                            } else {
-                                throw new Error('Respuesta de Chatbase inválida');
                             }
                         }
+                    } catch (error) {
+                        logError('Error en clasificación o procesamiento', {
+                            error: error.message,
+                            messageId: message.id,
+                            stack: error.stack
+                        });
                     }
-                } catch (error) {
-                    logError('Error en el procesamiento del mensaje', {
-                        error: error.message,
-                        messageId: message.id,
-                        stack: error.stack
-                    });
                 }
             }
     
-            // Agregar el mensaje a la conversación y procesar normalmente
+            // Agregar mensaje a la conversación
             if (conversation.addMessage(message)) {
                 await ConversationProcessor.processMessage(message, conversation);
                 this.emit('messageReceived', {
@@ -184,6 +169,7 @@ class ConversationService extends ConversationEvents {
             }
     
             return conversation;
+    
         } catch (error) {
             logError('Error procesando mensaje entrante', {
                 error: error.message,

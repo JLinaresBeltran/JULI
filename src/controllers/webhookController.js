@@ -209,11 +209,10 @@ const webhookController = {
     },
 
     _isConversationStart(change) {
-        // Verifica si es un inicio de conversación real
         return (
             change.field === "messages" &&
             change.value?.contacts?.[0] &&
-            !change.value.messages && // No hay mensajes todavía
+            !change.value.messages &&
             !!change.value?.contacts?.[0]?.wa_id &&
             change.value?.event === 'system_customer_welcome'
         );
@@ -274,15 +273,27 @@ const webhookController = {
                     isNewUser: context?.contacts?.[0] && !conversationService.getConversation(message.from)
                 });
 
-                // Si es un usuario nuevo y no es inicio de conversación, manejar bienvenida
-                if (!conversationService.getConversation(message.from)) {
+                // Verificar si es un nuevo usuario
+                const conversation = conversationService.getConversation(message.from);
+                const isNewUser = !conversation;
+
+                // Si es un nuevo usuario, manejar el flujo de bienvenida primero
+                if (isNewUser) {
                     await this._handleNewUserWelcome(message.from, context);
                 }
 
+                // Formatear el mensaje usando la función formatMessage
                 const formattedMessage = formatMessage(message, context);
-                const conversation = await conversationService.processIncomingMessage(
+
+                // Procesar el mensaje
+                const processingOptions = {
+                    createIfNotExists: true,
+                    skipClassification: isNewUser
+                };
+
+                await conversationService.processIncomingMessage(
                     formattedMessage,
-                    { createIfNotExists: true }
+                    processingOptions
                 );
 
                 // Marcar como leído y procesar normalmente
@@ -304,11 +315,9 @@ const webhookController = {
                 // WebSocket notifications
                 this._broadcastUpdates(conversation);
 
-                results.processed++;
-                results.details.push({
-                    id: message.id,
-                    status: 'success',
-                    type: message.type
+                // Registrar éxito
+                this._addResult(results, message, 'success', {
+                    isFirstInteraction: isNewUser
                 });
 
             } catch (error) {
@@ -317,15 +326,19 @@ const webhookController = {
                     messageId: message.id,
                     type: message.type
                 });
-                results.errors++;
-                results.details.push({
-                    id: message.id,
-                    status: 'error',
-                    type: message.type,
-                    error: error.message
-                });
+                this._addResult(results, message, 'error', error);
             }
         }
+    },
+
+    _addResult(results, message, status, details) {
+        results[status === 'success' ? 'processed' : 'errors']++;
+        results.details.push({
+            id: message.id,
+            status,
+            type: message.type,
+            ...details
+        });
     },
 
     async _processStatuses(statuses, context, results) {
