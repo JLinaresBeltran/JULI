@@ -349,3 +349,7 @@ const ConversationMonitor = () => {
 export default ConversationMonitor;
 
 src/public/ConversationViewer.jsx
+
+heroku logs --tail
+heroku logs --tail -n 100
+heroku restart

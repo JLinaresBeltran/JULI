@@ -1,6 +1,8 @@
 // src/services/conversation/ConversationProcessor.js
 const { logError, logInfo } = require('../../utils/logger');
 const queryClassifierService = require('../queryClassifierService');
+const chatbaseClient = require('../../integrations/chatbaseClient');
+const whatsappService = require('../whatsappService');
 
 class ConversationProcessor {
     static async processMessage(message, conversation) {
@@ -80,6 +82,72 @@ class ConversationProcessor {
                 conversationId: conversation.id
             });
 
+            // Si la categoría es válida, procesar con Chatbase
+            if (classification.category !== 'unknown') {
+                try {
+                    logInfo('Iniciando consulta a Chatbase', {
+                        messageId: message.id,
+                        category: classification.category
+                    });
+
+                    // Obtener respuesta de Chatbase
+                    const chatbaseResponse = await chatbaseClient.getResponse(
+                        content,
+                        classification.category
+                    );
+
+                    // Verificar y procesar la respuesta
+                    if (chatbaseResponse && chatbaseResponse.content) {
+                        // Enviar respuesta al usuario vía WhatsApp
+                        await whatsappService.sendTextMessage(
+                            message.from,
+                            chatbaseResponse.content,
+                            message.metadata?.phoneNumberId
+                        );
+
+                        logInfo('Respuesta de Chatbase enviada exitosamente', {
+                            messageId: message.id,
+                            category: classification.category,
+                            responseLength: chatbaseResponse.content.length
+                        });
+
+                        // Almacenar la respuesta en el historial
+                        this._addToProcessingHistory(conversation, {
+                            messageId: message.id,
+                            type: 'chatbase_response',
+                            category: classification.category,
+                            timestamp: new Date(),
+                            success: true
+                        });
+                    } else {
+                        throw new Error('Respuesta de Chatbase inválida o vacía');
+                    }
+                } catch (chatError) {
+                    logError('Error en la comunicación con Chatbase', {
+                        error: chatError.message,
+                        category: classification.category,
+                        messageId: message.id
+                    });
+
+                    // Enviar mensaje de error al usuario
+                    await whatsappService.sendTextMessage(
+                        message.from,
+                        "Lo siento, estoy teniendo problemas para procesar tu consulta. Por favor, intenta nuevamente en unos momentos.",
+                        message.metadata?.phoneNumberId
+                    );
+
+                    // Registrar el error en el historial
+                    this._addToProcessingHistory(conversation, {
+                        messageId: message.id,
+                        type: 'chatbase_error',
+                        category: classification.category,
+                        timestamp: new Date(),
+                        success: false,
+                        error: chatError.message
+                    });
+                }
+            }
+
         } catch (error) {
             logError('Error en procesamiento de mensaje de texto', {
                 messageId: message.id,
@@ -114,6 +182,29 @@ class ConversationProcessor {
             // Clasificar la transcripción
             const classification = await queryClassifierService.classifyQuery(mockTranscription);
             this._storeClassification(conversation, message.id, classification);
+
+            // Procesar con Chatbase si la clasificación es válida
+            if (classification.category !== 'unknown') {
+                try {
+                    const chatbaseResponse = await chatbaseClient.getResponse(
+                        mockTranscription,
+                        classification.category
+                    );
+
+                    if (chatbaseResponse && chatbaseResponse.content) {
+                        await whatsappService.sendTextMessage(
+                            message.from,
+                            chatbaseResponse.content,
+                            message.metadata?.phoneNumberId
+                        );
+                    }
+                } catch (error) {
+                    logError('Error procesando audio en Chatbase', {
+                        messageId: message.id,
+                        error: error.message
+                    });
+                }
+            }
 
         } catch (error) {
             logError('Error en procesamiento de audio', {
