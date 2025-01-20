@@ -16,19 +16,15 @@ class ConversationProcessor {
                 };
             }
 
-            // Verificar si es un evento de eliminación de mensajes o reinicio
-            if (message.type === 'system' && message.system?.body?.includes('Este mensaje fue eliminado')) {
-                logInfo('Detectado evento de eliminación de mensajes', {
-                    messageId: message.id,
-                    conversationId: conversation.id
-                });
-                await this._handleChatReset(conversation);
-                return true;
-            }
-
             // Actualizar intentos de procesamiento
             message.attempts = (message.attempts || 0) + 1;
             message.lastAttempt = new Date();
+
+            // Detectar evento de eliminación
+            if (this._isDeleteEvent(message)) {
+                await this._handleChatReset(conversation, message);
+                return true;
+            }
 
             // Procesar según el tipo de mensaje
             if (message.type === 'text') {
@@ -61,17 +57,28 @@ class ConversationProcessor {
         }
     }
 
-    static async _handleChatReset(conversation) {
+    static _isDeleteEvent(message) {
+        // Verificar diferentes patrones de eventos de eliminación
+        return (
+            (message.type === 'system' && message.system?.body?.includes('eliminado')) ||
+            (message.type === 'notification' && message.notification?.type === 'message_deleted') ||
+            message.status === 'deleted' ||
+            message.event === 'message_deleted'
+        );
+    }
+
+    static async _handleChatReset(conversation, message) {
         try {
             const lastCategory = conversation.currentCategory || 
                                conversation.metadata?.classifications?.slice(-1)[0]?.category;
 
-            if (lastCategory && lastCategory !== 'unknown') {
-                logInfo('Reiniciando chat en Chatbase', {
-                    conversationId: conversation.id,
-                    category: lastCategory
-                });
+            logInfo('Detectado evento de eliminación', {
+                conversationId: conversation.id,
+                lastCategory,
+                messageId: message.id
+            });
 
+            if (lastCategory && lastCategory !== 'unknown') {
                 // Reiniciar chat en Chatbase
                 await chatbaseClient.resetChat(lastCategory);
 
@@ -80,15 +87,16 @@ class ConversationProcessor {
                 conversation.currentCategory = null;
                 conversation.lastClassification = null;
 
-                // Registrar el reinicio en el historial
+                // Registrar el reinicio
                 this._addToProcessingHistory(conversation, {
                     type: 'chat_reset',
                     timestamp: new Date(),
                     category: lastCategory,
-                    success: true
+                    success: true,
+                    trigger: 'message_deleted'
                 });
 
-                // Enviar mensaje de reinicio al usuario
+                // Enviar mensaje al usuario
                 await whatsappService.sendTextMessage(
                     conversation.whatsappId,
                     "La conversación ha sido reiniciada. ¿En qué puedo ayudarte?",
@@ -107,9 +115,8 @@ class ConversationProcessor {
             });
 
             this._addToProcessingHistory(conversation, {
-                type: 'chat_reset',
+                type: 'chat_reset_error',
                 timestamp: new Date(),
-                success: false,
                 error: error.message
             });
         }
