@@ -12,7 +12,7 @@ class ConversationService extends ConversationEvents {
         super();
         this.manager = new ConversationManager();
         
-        // Configuración con valores en milisegundos
+        // Configuración explícita
         this.config = {
             maintenanceInterval: 30 * 1000,    // 30 segundos para revisar
             timeoutDuration: 60 * 1000         // 1 minuto para timeout
@@ -23,18 +23,19 @@ class ConversationService extends ConversationEvents {
     }
 
     startMaintenanceInterval() {
-        // Asegurarnos de que no haya un intervalo existente
+        // Limpiar intervalo existente si hay uno
         if (this._maintenanceInterval) {
             clearInterval(this._maintenanceInterval);
         }
 
+        // Iniciar nuevo intervalo
         this._maintenanceInterval = setInterval(() => {
             this.cleanupInactiveConversations();
         }, this.config.maintenanceInterval);
         
         logInfo('Intervalo de mantenimiento iniciado', {
-            checkInterval: Math.floor(this.config.maintenanceInterval / 1000),
-            timeoutDuration: Math.floor(this.config.timeoutDuration / 1000)
+            checkInterval: Math.floor(this.config.maintenanceInterval / 1000) + ' segundos',
+            timeoutDuration: Math.floor(this.config.timeoutDuration / 1000) + ' segundos'
         });
     }
 
@@ -45,29 +46,36 @@ class ConversationService extends ConversationEvents {
 
         logInfo('Iniciando revisión de conversaciones inactivas', {
             totalConversations: conversations.length,
-            currentTime: new Date(now).toISOString()
+            currentTime: new Date(now).toISOString(),
+            timeoutThreshold: Math.floor(this.config.timeoutDuration / 1000) + ' segundos'
         });
 
         for (const conversation of conversations) {
             const lastMessageTime = this._getLastMessageTime(conversation);
             const inactiveTime = now - lastMessageTime;
             
+            logInfo('Revisando conversación', {
+                whatsappId: conversation.whatsappId,
+                inactiveTime: Math.floor(inactiveTime / 1000) + ' segundos',
+                threshold: Math.floor(this.config.timeoutDuration / 1000) + ' segundos'
+            });
+
             if (inactiveTime > this.config.timeoutDuration) {
                 logInfo('Conversación inactiva detectada', {
                     whatsappId: conversation.whatsappId,
-                    inactiveFor: Math.floor(inactiveTime / 1000),
-                    timeout: Math.floor(this.config.timeoutDuration / 1000)
+                    inactiveFor: Math.floor(inactiveTime / 1000) + ' segundos',
+                    lastMessageTime: new Date(lastMessageTime).toISOString()
                 });
 
                 // Reiniciar chat en Chatbase si hay una categoría activa
-                if (conversation.currentCategory && conversation.currentCategory !== 'unknown') {
+                if (conversation.category && conversation.category !== 'unknown') {
                     try {
                         const chatbaseClient = require('../integrations/chatbaseClient');
-                        await chatbaseClient.resetChat(conversation.currentCategory);
+                        await chatbaseClient.resetChat(conversation.category);
                         
                         logInfo('Chat de Chatbase reiniciado', {
                             whatsappId: conversation.whatsappId,
-                            category: conversation.currentCategory
+                            category: conversation.category
                         });
                     } catch (error) {
                         logError('Error reiniciando chat en Chatbase', {
@@ -85,13 +93,14 @@ class ConversationService extends ConversationEvents {
         logInfo('Limpieza de conversaciones completada', {
             checkedCount: conversations.length,
             removedCount: inactiveCount,
-            remainingCount: this.getActiveConversationCount()
+            remainingCount: this.getActiveConversationCount(),
+            timestamp: new Date().toISOString()
         });
     }
 
     _getLastMessageTime(conversation) {
         if (!conversation.messages || conversation.messages.length === 0) {
-            return conversation.createdAt || Date.now();
+            return conversation.createdAt?.getTime() || Date.now();
         }
         
         const lastMessage = conversation.messages[conversation.messages.length - 1];
