@@ -5,6 +5,16 @@ const chatbaseClient = require('../../integrations/chatbaseClient');
 const whatsappService = require('../whatsappService');
 
 class ConversationProcessor {
+    static getContextMessageByCategory(category) {
+        const contextMessages = {
+            servicios_publicos: "Hola, soy JULI. Estoy aquí para brindarte orientación en tus dudas o reclamos sobre servicios públicos domiciliarios. Por favor, describe detalladamente tu situación.",
+            telecomunicaciones: "Hola, soy JULI. Estoy aquí para brindarte orientación en tus dudas o reclamos sobre telecomunicaciones. Por favor, describe detalladamente tu situación.",
+            transporte_aereo: "Hola, soy JULI. Estoy aquí para brindarte orientación en tus dudas o reclamos sobre transporte aéreo. Por favor, describe detalladamente tu situación."
+        };
+        
+        return contextMessages[category] || "";
+    }
+
     static async processMessage(message, conversation) {
         try {
             // Inicializar metadata si no existe
@@ -58,7 +68,6 @@ class ConversationProcessor {
     }
 
     static _isDeleteEvent(message) {
-        // Verificar diferentes patrones de eventos de eliminación
         return (
             (message.type === 'system' && message.system?.body?.includes('eliminado')) ||
             (message.type === 'notification' && message.notification?.type === 'message_deleted') ||
@@ -161,7 +170,22 @@ class ConversationProcessor {
                         category: classification.category
                     });
 
-                    // Obtener respuesta de Chatbase
+                    // Obtener el mensaje de contexto según la categoría
+                    const contextMessage = this.getContextMessageByCategory(classification.category);
+                    
+                    // Enviar primero el mensaje de contexto a Chatbase (invisible para el usuario)
+                    if (contextMessage) {
+                        await chatbaseClient.getResponse(
+                            contextMessage,
+                            classification.category
+                        );
+                        
+                        logInfo('Mensaje de contexto enviado a Chatbase', {
+                            category: classification.category
+                        });
+                    }
+
+                    // Obtener respuesta de Chatbase para el mensaje del usuario
                     const chatbaseResponse = await chatbaseClient.getResponse(
                         content,
                         classification.category
@@ -257,6 +281,18 @@ class ConversationProcessor {
             // Procesar con Chatbase si la clasificación es válida
             if (classification.category !== 'unknown') {
                 try {
+                    // Obtener el mensaje de contexto según la categoría
+                    const contextMessage = this.getContextMessageByCategory(classification.category);
+                    
+                    // Enviar primero el mensaje de contexto a Chatbase
+                    if (contextMessage) {
+                        await chatbaseClient.getResponse(
+                            contextMessage,
+                            classification.category
+                        );
+                    }
+
+                    // Enviar la transcripción
                     const chatbaseResponse = await chatbaseClient.getResponse(
                         mockTranscription,
                         classification.category
