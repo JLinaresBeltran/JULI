@@ -43,29 +43,30 @@ class ChatbaseClient {
                 chatbotId: config.chatbotId
             });
 
-            // Preparar el stream ID único para la conversación
-            const streamId = this.activeChats.get(serviceType) || this._generateStreamId();
-            this.activeChats.set(serviceType, streamId);
+            // Preparar el ID único para la conversación
+            const conversationId = this.activeChats.get(serviceType) || 
+                                 `conv-${serviceType}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+            this.activeChats.set(serviceType, conversationId);
 
-            // Realizar la petición a Chatbase
+            // Preparar el payload según el formato probado exitosamente
+            const payload = {
+                messages: [{ 
+                    content: message, 
+                    role: 'user' 
+                }],
+                chatbotId: config.chatbotId,
+                conversationId: conversationId
+            };
+
+            // Realizar la petición a Chatbase usando la URL correcta
             const response = await axios({
                 method: 'post',
-                url: `${config.endpoint}/stream`,
+                url: `${config.endpoint}/chat`,
                 headers: {
                     'Authorization': `Bearer ${config.apiKey}`,
                     'Content-Type': 'application/json'
                 },
-                data: {
-                    messages: [
-                        {
-                            role: "user",
-                            content: message
-                        }
-                    ],
-                    chatId: streamId,
-                    chatbotId: config.chatbotId,
-                    stream: false
-                }
+                data: payload
             });
 
             // Validar y procesar la respuesta
@@ -77,7 +78,7 @@ class ChatbaseClient {
                 content: response.data.text,
                 metadata: {
                     category: serviceType,
-                    streamId,
+                    conversationId,
                     timestamp: new Date().toISOString()
                 }
             };
@@ -85,7 +86,7 @@ class ChatbaseClient {
             logInfo('Respuesta de Chatbase recibida', {
                 serviceType,
                 responseLength: result.content.length,
-                streamId
+                conversationId
             });
 
             return result;
@@ -93,7 +94,10 @@ class ChatbaseClient {
         } catch (error) {
             logError('Error getting Chatbase response', {
                 error: error.message,
-                serviceType
+                serviceType,
+                status: error.response?.status,
+                statusText: error.response?.statusText,
+                data: error.response?.data
             });
             
             // Si el error es de autenticación o configuración, reinicializar
@@ -117,8 +121,8 @@ class ChatbaseClient {
         }
     }
 
-    _generateStreamId() {
-        return `${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+    _generateConversationId(serviceType) {
+        return `conv-${serviceType}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     }
 }
 
