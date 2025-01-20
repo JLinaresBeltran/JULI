@@ -11,24 +11,30 @@ class ConversationService extends ConversationEvents {
     constructor() {
         super();
         this.manager = new ConversationManager();
+        
+        // Configuración con valores en milisegundos
+        this.config = {
+            maintenanceInterval: 30 * 1000,    // 30 segundos para revisar
+            timeoutDuration: 60 * 1000         // 1 minuto para timeout
+        };
+
         this.setupHandlers();
         this.startMaintenanceInterval();
-        
-        // Configuración
-        this.config = {
-        maintenanceInterval: 30 * 1000,    // 30 segundos para revisar más frecuentemente
-        timeoutDuration: 60 * 1000         // 1 minuto para timeout
-        };
     }
 
     startMaintenanceInterval() {
-        setInterval(() => {
+        // Asegurarnos de que no haya un intervalo existente
+        if (this._maintenanceInterval) {
+            clearInterval(this._maintenanceInterval);
+        }
+
+        this._maintenanceInterval = setInterval(() => {
             this.cleanupInactiveConversations();
-        }, this.config?.maintenanceInterval || 30000); // 30 segundos por defecto
+        }, this.config.maintenanceInterval);
         
         logInfo('Intervalo de mantenimiento iniciado', {
-            checkInterval: `${this.config?.maintenanceInterval / 1000} segundos`,
-            timeoutDuration: `${this.config?.timeoutDuration / 1000} segundos`
+            checkInterval: Math.floor(this.config.maintenanceInterval / 1000),
+            timeoutDuration: Math.floor(this.config.timeoutDuration / 1000)
         });
     }
 
@@ -43,19 +49,22 @@ class ConversationService extends ConversationEvents {
         });
 
         for (const conversation of conversations) {
-            const inactiveTime = now - conversation.lastUpdateTime;
+            const lastMessageTime = this._getLastMessageTime(conversation);
+            const inactiveTime = now - lastMessageTime;
             
             if (inactiveTime > this.config.timeoutDuration) {
                 logInfo('Conversación inactiva detectada', {
                     whatsappId: conversation.whatsappId,
-                    inactiveFor: `${Math.floor(inactiveTime / 1000)} segundos`,
-                    timeout: `${this.config.timeoutDuration / 1000} segundos`
+                    inactiveFor: Math.floor(inactiveTime / 1000),
+                    timeout: Math.floor(this.config.timeoutDuration / 1000)
                 });
 
                 // Reiniciar chat en Chatbase si hay una categoría activa
                 if (conversation.currentCategory && conversation.currentCategory !== 'unknown') {
                     try {
+                        const chatbaseClient = require('../integrations/chatbaseClient');
                         await chatbaseClient.resetChat(conversation.currentCategory);
+                        
                         logInfo('Chat de Chatbase reiniciado', {
                             whatsappId: conversation.whatsappId,
                             category: conversation.currentCategory
@@ -73,14 +82,20 @@ class ConversationService extends ConversationEvents {
             }
         }
 
-        if (conversations.length > 0) {
-            logInfo('Limpieza de conversaciones completada', {
-                checkedCount: conversations.length,
-                removedCount: inactiveCount,
-                remainingCount: this.getActiveConversationCount(),
-                checkTime: new Date().toISOString()
-            });
+        logInfo('Limpieza de conversaciones completada', {
+            checkedCount: conversations.length,
+            removedCount: inactiveCount,
+            remainingCount: this.getActiveConversationCount()
+        });
+    }
+
+    _getLastMessageTime(conversation) {
+        if (!conversation.messages || conversation.messages.length === 0) {
+            return conversation.createdAt || Date.now();
         }
+        
+        const lastMessage = conversation.messages[conversation.messages.length - 1];
+        return new Date(lastMessage.timestamp).getTime();
     }
 
     setupHandlers() {

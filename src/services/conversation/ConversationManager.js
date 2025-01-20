@@ -16,7 +16,11 @@ class ConversationManager {
                 whatsappId,
                 userPhoneNumber,
                 messages: [],
-                metadata: {},
+                metadata: {
+                    audioTranscriptions: [],
+                    classifications: [],
+                    processingHistory: []
+                },
                 category: null,
                 classificationConfidence: null,
                 createdAt: new Date(),
