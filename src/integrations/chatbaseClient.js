@@ -7,13 +7,13 @@ class ChatbaseClient {
     constructor() {
         this.initialized = false;
         this.activeChats = new Map();
+        this.messageHistory = new Map();
     }
 
     async initialize() {
         if (this.initialized) return;
         
         try {
-            // Verificar que podemos obtener configuraciones para todos los servicios
             const services = ['servicios_publicos', 'telecomunicaciones', 'transporte_aereo'];
             services.forEach(service => {
                 const config = getChatbaseConfig(service);
@@ -30,35 +30,43 @@ class ChatbaseClient {
         }
     }
 
-    async getResponse(message, serviceType) {
+    async getResponse(message, serviceType, isContextMessage = false) {
         try {
             await this.initialize();
-
-            // Obtener configuración específica del servicio
             const config = getChatbaseConfig(serviceType);
+            
+            // Obtener o crear el ID de conversación para este servicio
+            const conversationId = this.activeChats.get(serviceType) || 
+                                 `conv-${serviceType}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+            
+            // Obtener el historial de mensajes actual
+            let messages = this.messageHistory.get(conversationId) || [];
+            
+            // Si es un mensaje de contexto, reiniciar el historial
+            if (isContextMessage) {
+                messages = [];
+            }
+            
+            // Agregar el nuevo mensaje al historial
+            messages.push({
+                content: message,
+                role: 'user'
+            });
 
             logInfo('Solicitando respuesta a Chatbase', { 
                 serviceType,
-                messageLength: message.length,
-                chatbotId: config.chatbotId
+                messageCount: messages.length,
+                chatbotId: config.chatbotId,
+                conversationId
             });
 
-            // Preparar el ID único para la conversación
-            const conversationId = this.activeChats.get(serviceType) || 
-                                 `conv-${serviceType}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-            this.activeChats.set(serviceType, conversationId);
-
-            // Preparar el payload según el formato probado exitosamente
             const payload = {
-                messages: [{ 
-                    content: message, 
-                    role: 'user' 
-                }],
+                messages,
                 chatbotId: config.chatbotId,
-                conversationId: conversationId
+                conversationId,
+                stream: false
             };
 
-            // Realizar la petición a Chatbase usando la URL correcta
             const response = await axios({
                 method: 'post',
                 url: `${config.endpoint}/chat`,
@@ -69,10 +77,19 @@ class ChatbaseClient {
                 data: payload
             });
 
-            // Validar y procesar la respuesta
             if (!response.data || !response.data.text) {
                 throw new Error('Invalid response from Chatbase');
             }
+
+            // Agregar la respuesta al historial
+            messages.push({
+                content: response.data.text,
+                role: 'assistant'
+            });
+
+            // Actualizar el historial y el ID de conversación
+            this.messageHistory.set(conversationId, messages);
+            this.activeChats.set(serviceType, conversationId);
 
             const result = {
                 content: response.data.text,
@@ -86,7 +103,8 @@ class ChatbaseClient {
             logInfo('Respuesta de Chatbase recibida', {
                 serviceType,
                 responseLength: result.content.length,
-                conversationId
+                conversationId,
+                messageCount: messages.length
             });
 
             return result;
@@ -100,7 +118,6 @@ class ChatbaseClient {
                 data: error.response?.data
             });
             
-            // Si el error es de autenticación o configuración, reinicializar
             if (error.response?.status === 401 || error.response?.status === 403) {
                 this.initialized = false;
             }
@@ -111,7 +128,11 @@ class ChatbaseClient {
 
     async resetChat(serviceType) {
         try {
-            this.activeChats.delete(serviceType);
+            const conversationId = this.activeChats.get(serviceType);
+            if (conversationId) {
+                this.messageHistory.delete(conversationId);
+                this.activeChats.delete(serviceType);
+            }
             logInfo('Chat reset successful', { serviceType });
         } catch (error) {
             logError('Error resetting chat', { 
@@ -119,10 +140,6 @@ class ChatbaseClient {
                 serviceType 
             });
         }
-    }
-
-    _generateConversationId(serviceType) {
-        return `conv-${serviceType}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     }
 }
 
