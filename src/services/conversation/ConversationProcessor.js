@@ -148,9 +148,19 @@ class ConversationProcessor {
                 return;
             }
     
-            // Clasificar mensaje subsiguiente
-            logInfo('Procesando mensaje subsiguiente - Activando clasificación');
-            const classification = await queryClassifierService.classifyQuery(content);
+            // Si ya existe una categoría en la conversación, usarla
+            let classification;
+            if (conversation.currentCategory && conversation.currentCategory !== 'unknown') {
+                classification = {
+                    category: conversation.currentCategory,
+                    confidence: 1.0  // Mantener la categoría con confianza máxima
+                };
+                logInfo('Usando categoría existente', { category: classification.category });
+            } else {
+                // Clasificar nuevo mensaje
+                logInfo('Procesando mensaje subsiguiente - Activando clasificación');
+                classification = await queryClassifierService.classifyQuery(content);
+            }
     
             // Almacenar resultado de clasificación
             this._storeClassification(conversation, message.id, classification);
@@ -165,10 +175,9 @@ class ConversationProcessor {
             // Si la categoría es válida, procesar con Chatbase
             if (classification.category !== 'unknown') {
                 try {
-                    // Verificar si es la primera interacción con Chatbase para esta conversación
+                    // Verificar si es la primera interacción con Chatbase
                     const isFirstInteraction = !conversation.metadata.chatbaseInitialized;
-    
-                    // Si es primera interacción, marcar la conversación como inicializada
+                    
                     if (isFirstInteraction) {
                         conversation.metadata.chatbaseInitialized = true;
                         logInfo('Iniciando nueva conversación con Chatbase', {
@@ -183,41 +192,37 @@ class ConversationProcessor {
                         isFirstInteraction
                     );
     
-                    if (!chatbaseResponse || !chatbaseResponse.content) {
+                    // Procesar respuesta
+                    if (chatbaseResponse && chatbaseResponse.content) {
+                        await whatsappService.sendTextMessage(
+                            message.from,
+                            chatbaseResponse.content,
+                            message.metadata?.phoneNumberId
+                        );
+    
+                        logInfo('Respuesta de Chatbase enviada exitosamente', {
+                            messageId: message.id,
+                            category: classification.category,
+                            responseLength: chatbaseResponse.content.length,
+                            isFirstInteraction
+                        });
+    
+                        this._addToProcessingHistory(conversation, {
+                            messageId: message.id,
+                            type: 'chatbase_response',
+                            category: classification.category,
+                            timestamp: new Date(),
+                            success: true,
+                            metadata: chatbaseResponse.metadata
+                        });
+                    } else {
                         throw new Error('Respuesta de Chatbase inválida o vacía');
                     }
-    
-                    // Enviar respuesta al usuario vía WhatsApp
-                    await whatsappService.sendTextMessage(
-                        message.from,
-                        chatbaseResponse.content,
-                        message.metadata?.phoneNumberId
-                    );
-    
-                    logInfo('Respuesta de Chatbase enviada exitosamente', {
-                        messageId: message.id,
-                        category: classification.category,
-                        responseLength: chatbaseResponse.content.length,
-                        isFirstInteraction,
-                        messageCount: chatbaseResponse.metadata.messageCount
-                    });
-    
-                    // Almacenar la respuesta en el historial
-                    this._addToProcessingHistory(conversation, {
-                        messageId: message.id,
-                        type: 'chatbase_response',
-                        category: classification.category,
-                        timestamp: new Date(),
-                        success: true,
-                        metadata: chatbaseResponse.metadata
-                    });
-    
                 } catch (chatError) {
                     logError('Error en la comunicación con Chatbase', {
                         error: chatError.message,
                         category: classification.category,
-                        messageId: message.id,
-                        stack: chatError.stack
+                        messageId: message.id
                     });
     
                     await whatsappService.sendTextMessage(
@@ -241,8 +246,7 @@ class ConversationProcessor {
             logError('Error en procesamiento de mensaje de texto', {
                 messageId: message.id,
                 error: error.message,
-                conversationId: conversation.id,
-                stack: error.stack
+                conversationId: conversation.id
             });
             throw error;
         }
