@@ -24,28 +24,61 @@ class ConversationService extends ConversationEvents {
     startMaintenanceInterval() {
         setInterval(() => {
             this.cleanupInactiveConversations();
-        }, this.config?.maintenanceInterval || 300000);
+        }, this.config?.maintenanceInterval || 30000); // 30 segundos por defecto
         
         logInfo('Intervalo de mantenimiento iniciado', {
-            interval: this.config?.maintenanceInterval || 300000
+            checkInterval: `${this.config?.maintenanceInterval / 1000} segundos`,
+            timeoutDuration: `${this.config?.timeoutDuration / 1000} segundos`
         });
     }
 
     async cleanupInactiveConversations() {
         const now = Date.now();
         let inactiveCount = 0;
+        const conversations = this.manager.getAll();
 
-        for (const conversation of this.manager.getAll()) {
-            if (now - conversation.lastUpdateTime > this.config.timeoutDuration) {
+        logInfo('Iniciando revisión de conversaciones inactivas', {
+            totalConversations: conversations.length,
+            currentTime: new Date(now).toISOString()
+        });
+
+        for (const conversation of conversations) {
+            const inactiveTime = now - conversation.lastUpdateTime;
+            
+            if (inactiveTime > this.config.timeoutDuration) {
+                logInfo('Conversación inactiva detectada', {
+                    whatsappId: conversation.whatsappId,
+                    inactiveFor: `${Math.floor(inactiveTime / 1000)} segundos`,
+                    timeout: `${this.config.timeoutDuration / 1000} segundos`
+                });
+
+                // Reiniciar chat en Chatbase si hay una categoría activa
+                if (conversation.currentCategory && conversation.currentCategory !== 'unknown') {
+                    try {
+                        await chatbaseClient.resetChat(conversation.currentCategory);
+                        logInfo('Chat de Chatbase reiniciado', {
+                            whatsappId: conversation.whatsappId,
+                            category: conversation.currentCategory
+                        });
+                    } catch (error) {
+                        logError('Error reiniciando chat en Chatbase', {
+                            error: error.message,
+                            whatsappId: conversation.whatsappId
+                        });
+                    }
+                }
+
                 await this.closeConversation(conversation.whatsappId);
                 inactiveCount++;
             }
         }
 
-        if (inactiveCount > 0) {
+        if (conversations.length > 0) {
             logInfo('Limpieza de conversaciones completada', {
+                checkedCount: conversations.length,
                 removedCount: inactiveCount,
-                remainingCount: this.getActiveConversationCount()
+                remainingCount: this.getActiveConversationCount(),
+                checkTime: new Date().toISOString()
             });
         }
     }
