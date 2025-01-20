@@ -16,8 +16,8 @@ class ConversationService extends ConversationEvents {
         
         // Configuración
         this.config = {
-            maintenanceInterval: 5 * 60 * 1000, // 5 minutos
-            timeoutDuration: 30 * 60 * 1000     // 30 minutos
+        maintenanceInterval: 30 * 1000,    // 30 segundos para revisar más frecuentemente
+        timeoutDuration: 60 * 1000         // 1 minuto para timeout
         };
     }
 
