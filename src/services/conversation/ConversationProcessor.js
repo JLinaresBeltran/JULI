@@ -135,33 +135,33 @@ class ConversationProcessor {
         try {
             const content = typeof message.text === 'object' ? 
                 message.text.body : message.text;
-
+    
             logInfo('Procesando mensaje de texto', {
                 messageId: message.id,
                 contentLength: content?.length,
                 conversationId: conversation.id
             });
-
+    
             // Verificar si es el primer mensaje
             if (this._isFirstMessage(conversation)) {
                 logInfo('Procesando primer mensaje - Solo bienvenida', { content });
                 return;
             }
-
+    
             // Clasificar mensaje subsiguiente
             logInfo('Procesando mensaje subsiguiente - Activando clasificación');
             const classification = await queryClassifierService.classifyQuery(content);
-
+    
             // Almacenar resultado de clasificación
             this._storeClassification(conversation, message.id, classification);
-
+    
             logInfo('Mensaje clasificado exitosamente', {
                 messageId: message.id,
                 category: classification.category,
                 confidence: classification.confidence,
                 conversationId: conversation.id
             });
-
+    
             // Si la categoría es válida, procesar con Chatbase
             if (classification.category !== 'unknown') {
                 try {
@@ -169,68 +169,80 @@ class ConversationProcessor {
                         messageId: message.id,
                         category: classification.category
                     });
-
+    
                     // Obtener el mensaje de contexto según la categoría
                     const contextMessage = this.getContextMessageByCategory(classification.category);
                     
-                    // Enviar primero el mensaje de contexto a Chatbase (invisible para el usuario)
-                    if (contextMessage) {
-                        await chatbaseClient.getResponse(
-                            contextMessage,
-                            classification.category
-                        );
-                        
-                        logInfo('Mensaje de contexto enviado a Chatbase', {
-                            category: classification.category
-                        });
+                    if (!contextMessage) {
+                        throw new Error('Mensaje de contexto no disponible para la categoría');
                     }
-
-                    // Obtener respuesta de Chatbase para el mensaje del usuario
+    
+                    // Primero, resetear el chat en Chatbase para la categoría
+                    await chatbaseClient.resetChat(classification.category);
+                    
+                    logInfo('Chat reseteado para nuevo contexto', {
+                        category: classification.category
+                    });
+    
+                    // Enviar mensaje de contexto a Chatbase
+                    await chatbaseClient.getResponse(
+                        contextMessage,
+                        classification.category
+                    );
+    
+                    logInfo('Mensaje de contexto enviado a Chatbase', {
+                        category: classification.category,
+                        contextMessage: contextMessage.substring(0, 50) + '...'
+                    });
+    
+                    // Enviar el mensaje real del usuario
                     const chatbaseResponse = await chatbaseClient.getResponse(
                         content,
                         classification.category
                     );
-
-                    // Verificar y procesar la respuesta
-                    if (chatbaseResponse && chatbaseResponse.content) {
-                        // Enviar respuesta al usuario vía WhatsApp
-                        await whatsappService.sendTextMessage(
-                            message.from,
-                            chatbaseResponse.content,
-                            message.metadata?.phoneNumberId
-                        );
-
-                        logInfo('Respuesta de Chatbase enviada exitosamente', {
-                            messageId: message.id,
-                            category: classification.category,
-                            responseLength: chatbaseResponse.content.length
-                        });
-
-                        // Almacenar la respuesta en el historial
-                        this._addToProcessingHistory(conversation, {
-                            messageId: message.id,
-                            type: 'chatbase_response',
-                            category: classification.category,
-                            timestamp: new Date(),
-                            success: true
-                        });
-                    } else {
+    
+                    if (!chatbaseResponse || !chatbaseResponse.content) {
                         throw new Error('Respuesta de Chatbase inválida o vacía');
                     }
+    
+                    // Enviar respuesta al usuario vía WhatsApp
+                    await whatsappService.sendTextMessage(
+                        message.from,
+                        chatbaseResponse.content,
+                        message.metadata?.phoneNumberId
+                    );
+    
+                    logInfo('Respuesta de Chatbase enviada exitosamente', {
+                        messageId: message.id,
+                        category: classification.category,
+                        responseLength: chatbaseResponse.content.length
+                    });
+    
+                    // Almacenar la respuesta en el historial
+                    this._addToProcessingHistory(conversation, {
+                        messageId: message.id,
+                        type: 'chatbase_response',
+                        category: classification.category,
+                        timestamp: new Date(),
+                        success: true,
+                        includesContext: true
+                    });
+    
                 } catch (chatError) {
                     logError('Error en la comunicación con Chatbase', {
                         error: chatError.message,
                         category: classification.category,
-                        messageId: message.id
+                        messageId: message.id,
+                        stack: chatError.stack
                     });
-
+    
                     // Enviar mensaje de error al usuario
                     await whatsappService.sendTextMessage(
                         message.from,
                         "Lo siento, estoy teniendo problemas para procesar tu consulta. Por favor, intenta nuevamente en unos momentos.",
                         message.metadata?.phoneNumberId
                     );
-
+    
                     // Registrar el error en el historial
                     this._addToProcessingHistory(conversation, {
                         messageId: message.id,
@@ -242,12 +254,13 @@ class ConversationProcessor {
                     });
                 }
             }
-
+    
         } catch (error) {
             logError('Error en procesamiento de mensaje de texto', {
                 messageId: message.id,
                 error: error.message,
-                conversationId: conversation.id
+                conversationId: conversation.id,
+                stack: error.stack
             });
             throw error;
         }
