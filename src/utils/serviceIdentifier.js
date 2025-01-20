@@ -4,7 +4,7 @@ const SERVICE_KEYWORDS = {
     SERVICIOS_PUBLICOS: [
         'agua', 'luz', 'electricidad', 'gas', 'alcantarillado',
         'basura', 'factura', 'corte', 'reconexión', 'medidor',
-        'servicios públicos', 'recibo', 'consumo'
+        'servicios públicos', 'recibo', 'consumo', 'energia'
     ],
     TELECOMUNICACIONES: [
         'internet', 'teléfono', 'celular', 'móvil', 'señal',
