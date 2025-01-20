@@ -16,6 +16,16 @@ class ConversationProcessor {
                 };
             }
 
+            // Verificar si es un evento de eliminación de mensajes o reinicio
+            if (message.type === 'system' && message.system?.body?.includes('Este mensaje fue eliminado')) {
+                logInfo('Detectado evento de eliminación de mensajes', {
+                    messageId: message.id,
+                    conversationId: conversation.id
+                });
+                await this._handleChatReset(conversation);
+                return true;
+            }
+
             // Actualizar intentos de procesamiento
             message.attempts = (message.attempts || 0) + 1;
             message.lastAttempt = new Date();
@@ -48,6 +58,60 @@ class ConversationProcessor {
         } catch (error) {
             this._handleProcessingError(message, conversation, error);
             return false;
+        }
+    }
+
+    static async _handleChatReset(conversation) {
+        try {
+            const lastCategory = conversation.currentCategory || 
+                               conversation.metadata?.classifications?.slice(-1)[0]?.category;
+
+            if (lastCategory && lastCategory !== 'unknown') {
+                logInfo('Reiniciando chat en Chatbase', {
+                    conversationId: conversation.id,
+                    category: lastCategory
+                });
+
+                // Reiniciar chat en Chatbase
+                await chatbaseClient.resetChat(lastCategory);
+
+                // Limpiar historial de clasificaciones
+                conversation.metadata.classifications = [];
+                conversation.currentCategory = null;
+                conversation.lastClassification = null;
+
+                // Registrar el reinicio en el historial
+                this._addToProcessingHistory(conversation, {
+                    type: 'chat_reset',
+                    timestamp: new Date(),
+                    category: lastCategory,
+                    success: true
+                });
+
+                // Enviar mensaje de reinicio al usuario
+                await whatsappService.sendTextMessage(
+                    conversation.whatsappId,
+                    "La conversación ha sido reiniciada. ¿En qué puedo ayudarte?",
+                    conversation.metadata?.phoneNumberId
+                );
+
+                logInfo('Chat reiniciado exitosamente', {
+                    conversationId: conversation.id,
+                    category: lastCategory
+                });
+            }
+        } catch (error) {
+            logError('Error al reiniciar chat', {
+                error: error.message,
+                conversationId: conversation.id
+            });
+
+            this._addToProcessingHistory(conversation, {
+                type: 'chat_reset',
+                timestamp: new Date(),
+                success: false,
+                error: error.message
+            });
         }
     }
 
