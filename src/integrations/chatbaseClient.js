@@ -30,40 +30,54 @@ class ChatbaseClient {
         }
     }
 
-    async getResponse(message, serviceType, isContextMessage = false) {
+    async getResponse(message, serviceType, isFirstInteraction = false) {
         try {
             await this.initialize();
             const config = getChatbaseConfig(serviceType);
             
-            // Obtener o crear el ID de conversación para este servicio
-            const conversationId = this.activeChats.get(serviceType) || 
-                                 `conv-${serviceType}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-            
-            // Obtener el historial de mensajes actual
-            let messages = this.messageHistory.get(conversationId) || [];
-            
-            // Si es un mensaje de contexto, reiniciar el historial
-            if (isContextMessage) {
-                messages = [];
+            // Obtener o crear el ID de conversación
+            let conversationId = this.activeChats.get(serviceType);
+            if (!conversationId || isFirstInteraction) {
+                conversationId = `conv-${serviceType}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+                this.activeChats.set(serviceType, conversationId);
+                this.messageHistory.set(conversationId, []);
+                
+                logInfo('Nueva conversación Chatbase iniciada', {
+                    serviceType,
+                    conversationId,
+                    isFirstInteraction
+                });
             }
             
-            // Agregar el nuevo mensaje al historial
+            // Obtener el historial de mensajes
+            const messages = this.messageHistory.get(conversationId) || [];
+
+            // Si es la primera interacción, agregar el mensaje de contexto
+            if (isFirstInteraction) {
+                const contextMessage = {
+                    role: 'assistant',
+                    content: "Hola, soy JULI. Estoy aquí para brindarte orientación en tus dudas o reclamos. Por favor, describe detalladamente tu situación."
+                };
+                messages.push(contextMessage);
+            }
+
+            // Agregar el nuevo mensaje del usuario
             messages.push({
-                content: message,
-                role: 'user'
+                role: 'user',
+                content: message
             });
 
-            logInfo('Solicitando respuesta a Chatbase', { 
+            logInfo('Solicitando respuesta a Chatbase', {
                 serviceType,
                 messageCount: messages.length,
-                chatbotId: config.chatbotId,
-                conversationId
+                conversationId,
+                isFirstInteraction
             });
 
             const payload = {
-                messages,
+                messages: messages,
                 chatbotId: config.chatbotId,
-                conversationId,
+                conversationId: conversationId,
                 stream: false
             };
 
@@ -83,19 +97,19 @@ class ChatbaseClient {
 
             // Agregar la respuesta al historial
             messages.push({
-                content: response.data.text,
-                role: 'assistant'
+                role: 'assistant',
+                content: response.data.text
             });
 
-            // Actualizar el historial y el ID de conversación
+            // Actualizar el historial
             this.messageHistory.set(conversationId, messages);
-            this.activeChats.set(serviceType, conversationId);
 
             const result = {
                 content: response.data.text,
                 metadata: {
                     category: serviceType,
                     conversationId,
+                    messageCount: messages.length,
                     timestamp: new Date().toISOString()
                 }
             };
@@ -104,7 +118,8 @@ class ChatbaseClient {
                 serviceType,
                 responseLength: result.content.length,
                 conversationId,
-                messageCount: messages.length
+                messageCount: messages.length,
+                isFirstInteraction
             });
 
             return result;
@@ -113,15 +128,8 @@ class ChatbaseClient {
             logError('Error getting Chatbase response', {
                 error: error.message,
                 serviceType,
-                status: error.response?.status,
-                statusText: error.response?.statusText,
-                data: error.response?.data
+                stack: error.stack
             });
-            
-            if (error.response?.status === 401 || error.response?.status === 403) {
-                this.initialized = false;
-            }
-
             throw error;
         }
     }
@@ -132,14 +140,26 @@ class ChatbaseClient {
             if (conversationId) {
                 this.messageHistory.delete(conversationId);
                 this.activeChats.delete(serviceType);
+                logInfo('Chat reset successful', { 
+                    serviceType,
+                    conversationId
+                });
             }
-            logInfo('Chat reset successful', { serviceType });
         } catch (error) {
             logError('Error resetting chat', { 
                 error: error.message,
                 serviceType 
             });
         }
+    }
+
+    getMessageCount(serviceType) {
+        const conversationId = this.activeChats.get(serviceType);
+        if (conversationId) {
+            const messages = this.messageHistory.get(conversationId);
+            return messages ? messages.length : 0;
+        }
+        return 0;
     }
 }
 

@@ -135,82 +135,73 @@ class ConversationProcessor {
         try {
             const content = typeof message.text === 'object' ? 
                 message.text.body : message.text;
-
+    
             logInfo('Procesando mensaje de texto', {
                 messageId: message.id,
                 contentLength: content?.length,
                 conversationId: conversation.id
             });
-
+    
             // Verificar si es el primer mensaje
             if (this._isFirstMessage(conversation)) {
                 logInfo('Procesando primer mensaje - Solo bienvenida', { content });
                 return;
             }
-
+    
             // Clasificar mensaje subsiguiente
             logInfo('Procesando mensaje subsiguiente - Activando clasificación');
             const classification = await queryClassifierService.classifyQuery(content);
-
+    
             // Almacenar resultado de clasificación
             this._storeClassification(conversation, message.id, classification);
-
+    
             logInfo('Mensaje clasificado exitosamente', {
                 messageId: message.id,
                 category: classification.category,
                 confidence: classification.confidence,
                 conversationId: conversation.id
             });
-
+    
             // Si la categoría es válida, procesar con Chatbase
             if (classification.category !== 'unknown') {
                 try {
-                    // Resetear el chat de Chatbase para la nueva conversación
-                    await chatbaseClient.resetChat(classification.category);
-                    
-                    logInfo('Chat reseteado para nuevo contexto', {
-                        category: classification.category
-                    });
-
-                    // Obtener y enviar el mensaje de contexto
-                    const contextMessage = this.getContextMessageByCategory(classification.category);
-                    if (contextMessage) {
-                        await chatbaseClient.getResponse(
-                            contextMessage,
-                            classification.category,
-                            true // indica que es un mensaje de contexto
-                        );
-                        
-                        logInfo('Mensaje de contexto enviado a Chatbase', {
-                            category: classification.category,
-                            contextMessage: contextMessage.substring(0, 50) + '...'
+                    // Verificar si es la primera interacción con Chatbase para esta conversación
+                    const isFirstInteraction = !conversation.metadata.chatbaseInitialized;
+    
+                    // Si es primera interacción, marcar la conversación como inicializada
+                    if (isFirstInteraction) {
+                        conversation.metadata.chatbaseInitialized = true;
+                        logInfo('Iniciando nueva conversación con Chatbase', {
+                            category: classification.category
                         });
                     }
-
-                    // Enviar el mensaje del usuario
+    
+                    // Enviar mensaje a Chatbase
                     const chatbaseResponse = await chatbaseClient.getResponse(
                         content,
                         classification.category,
-                        false // indica que no es un mensaje de contexto
+                        isFirstInteraction
                     );
-
+    
                     if (!chatbaseResponse || !chatbaseResponse.content) {
                         throw new Error('Respuesta de Chatbase inválida o vacía');
                     }
-
+    
                     // Enviar respuesta al usuario vía WhatsApp
                     await whatsappService.sendTextMessage(
                         message.from,
                         chatbaseResponse.content,
                         message.metadata?.phoneNumberId
                     );
-
+    
                     logInfo('Respuesta de Chatbase enviada exitosamente', {
                         messageId: message.id,
                         category: classification.category,
-                        responseLength: chatbaseResponse.content.length
+                        responseLength: chatbaseResponse.content.length,
+                        isFirstInteraction,
+                        messageCount: chatbaseResponse.metadata.messageCount
                     });
-
+    
                     // Almacenar la respuesta en el historial
                     this._addToProcessingHistory(conversation, {
                         messageId: message.id,
@@ -218,9 +209,9 @@ class ConversationProcessor {
                         category: classification.category,
                         timestamp: new Date(),
                         success: true,
-                        includesContext: true
+                        metadata: chatbaseResponse.metadata
                     });
-
+    
                 } catch (chatError) {
                     logError('Error en la comunicación con Chatbase', {
                         error: chatError.message,
@@ -228,13 +219,13 @@ class ConversationProcessor {
                         messageId: message.id,
                         stack: chatError.stack
                     });
-
+    
                     await whatsappService.sendTextMessage(
                         message.from,
                         "Lo siento, estoy teniendo problemas para procesar tu consulta. Por favor, intenta nuevamente en unos momentos.",
                         message.metadata?.phoneNumberId
                     );
-
+    
                     this._addToProcessingHistory(conversation, {
                         messageId: message.id,
                         type: 'chatbase_error',
@@ -245,7 +236,7 @@ class ConversationProcessor {
                     });
                 }
             }
-
+    
         } catch (error) {
             logError('Error en procesamiento de mensaje de texto', {
                 messageId: message.id,
