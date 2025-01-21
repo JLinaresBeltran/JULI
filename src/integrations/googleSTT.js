@@ -1,109 +1,102 @@
 // src/integrations/googleSTT.js
-const speech = require('@google-cloud/speech');
-const { spawn } = require('child_process');
+const { speechClient, googleConfig } = require('../config/google');
 const { logInfo, logError } = require('../utils/logger');
-const util = require('util');
-const stream = require('stream');
-const pipeline = util.promisify(stream.pipeline);
+const ffmpeg = require('fluent-ffmpeg');
+const { Readable } = require('stream');
 
-class GoogleSTTService {
-    constructor() {
-        try {
-            this.client = new speech.SpeechClient({
-                keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS
-            });
-            logInfo('Google STT Service initialized');
-        } catch (error) {
-            logError('Error initializing Google STT Service', { error });
-            throw error;
+const transcribeAudio = async (audioBuffer) => {
+    try {
+        logInfo('Iniciando proceso de transcripción');
+
+        // 1. Convertir audio OGG a RAW PCM
+        const rawAudio = await convertOggToRaw(audioBuffer);
+        
+        // 2. Preparar la solicitud para Google STT
+        const request = {
+            config: {
+                encoding: googleConfig.speech.encoding,
+                sampleRateHertz: googleConfig.speech.sampleRateHertz,
+                languageCode: googleConfig.speech.languageCode,
+                model: googleConfig.speech.model,
+                useEnhanced: true
+            },
+            audio: {
+                content: rawAudio.toString('base64')
+            }
+        };
+
+        logInfo('Enviando solicitud a Google Speech-to-Text', {
+            audioSize: rawAudio.length,
+            sampleRate: googleConfig.speech.sampleRateHertz
+        });
+        
+        // 3. Realizar la transcripción
+        const [response] = await speechClient.recognize(request);
+        
+        if (!response.results || response.results.length === 0) {
+            throw new Error('No se detectó texto en el audio');
         }
-    }
 
-    async convertOggToRaw(audioBuffer) {
-        return new Promise((resolve, reject) => {
-            const ffmpeg = spawn('ffmpeg', [
-                '-i', 'pipe:0',        // Input from pipe
-                '-f', 's16le',         // Output format: 16-bit little-endian
-                '-acodec', 'pcm_s16le', // Audio codec
-                '-ar', '16000',        // Sample rate
-                '-ac', '1',            // Mono channel
-                'pipe:1'               // Output to pipe
-            ]);
+        // 4. Procesar y retornar resultados
+        const transcription = response.results
+            .map(result => result.alternatives[0].transcript)
+            .join('\n');
+
+        logInfo('Transcripción completada exitosamente', {
+            length: transcription.length,
+            text: transcription.substring(0, 100) // Primeros 100 caracteres para debug
+        });
+
+        return transcription;
+    } catch (error) {
+        logError('Error en transcripción de audio', {
+            error: error.message,
+            stack: error.stack
+        });
+        throw error;
+    }
+};
+
+const convertOggToRaw = (audioBuffer) => {
+    return new Promise((resolve, reject) => {
+        try {
+            logInfo('Iniciando conversión de audio OGG a RAW');
+            
+            const inputStream = new Readable();
+            inputStream.push(audioBuffer);
+            inputStream.push(null);
 
             const chunks = [];
             
-            ffmpeg.stdout.on('data', chunk => chunks.push(chunk));
-            ffmpeg.stderr.on('data', data => logInfo('FFmpeg:', data.toString()));
-            
-            ffmpeg.on('exit', code => {
-                if (code === 0) {
-                    resolve(Buffer.concat(chunks));
-                } else {
-                    reject(new Error(`FFmpeg exited with code ${code}`));
-                }
-            });
-
-            ffmpeg.stdin.write(audioBuffer);
-            ffmpeg.stdin.end();
-        });
-    }
-
-    async transcribeAudio(audioBuffer, mimeType = 'audio/ogg') {
-        try {
-            logInfo('Iniciando transcripción de audio', {
-                bufferSize: audioBuffer.length,
-                mimeType
-            });
-
-            // Si es audio OGG (formato de WhatsApp), convertir a RAW
-            let processedBuffer = audioBuffer;
-            if (mimeType.includes('ogg')) {
-                logInfo('Convirtiendo audio OGG a RAW');
-                processedBuffer = await this.convertOggToRaw(audioBuffer);
-            }
-
-            const audioBytes = processedBuffer.toString('base64');
-            
-            const config = {
-                encoding: 'LINEAR16',
-                sampleRateHertz: 16000,
-                languageCode: 'es-ES',
-                enableAutomaticPunctuation: true,
-                model: 'default',
-                useEnhanced: true
-            };
-
-            const request = {
-                audio: { content: audioBytes },
-                config: config
-            };
-
-            logInfo('Enviando solicitud a Google Speech-to-Text');
-            const [response] = await this.client.recognize(request);
-
-            if (!response.results || response.results.length === 0) {
-                throw new Error('No se obtuvieron resultados de transcripción');
-            }
-
-            const transcription = response.results
-                .map(result => result.alternatives[0].transcript)
-                .join('\n');
-
-            logInfo('Transcripción completada exitosamente', {
-                length: transcription.length
-            });
-
-            return transcription;
+            ffmpeg(inputStream)
+                .toFormat('s16le')
+                .audioChannels(1)
+                .audioFrequency(googleConfig.speech.sampleRateHertz)
+                .on('error', (err) => {
+                    logError('Error en conversión de audio', {
+                        error: err.message,
+                        command: err.command
+                    });
+                    reject(err);
+                })
+                .on('end', () => {
+                    const rawAudio = Buffer.concat(chunks);
+                    logInfo('Conversión de audio completada', {
+                        inputSize: audioBuffer.length,
+                        outputSize: rawAudio.length
+                    });
+                    resolve(rawAudio);
+                })
+                .pipe()
+                .on('data', chunk => chunks.push(chunk));
 
         } catch (error) {
-            logError('Error en transcripción de audio', {
-                error: error.message,
-                stack: error.stack
+            logError('Error en preparación de conversión', {
+                error: error.message
             });
-            throw error;
+            reject(error);
         }
-    }
-}
+    });
+};
 
-// Exportar una única instancia del servicio
-module.exports = new GoogleSTTService();
+module.exports = { transcribeAudio };
