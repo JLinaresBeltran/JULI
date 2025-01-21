@@ -1,53 +1,72 @@
 // src/integrations/googleSTT.js
-const { speechClient, googleConfig } = require('../config/google');
 const { logInfo, logError } = require('../utils/logger');
 const ffmpeg = require('fluent-ffmpeg');
 const { Readable } = require('stream');
+const axios = require('axios');
+const googleConfig = require('../config/google');
 
 const transcribeAudio = async (audioBuffer) => {
     try {
-        logInfo('Iniciando proceso de transcripción');
-
-        // 1. Convertir audio OGG a RAW PCM
-        const rawAudio = await convertOggToRaw(audioBuffer);
+        logInfo('Google STT Service initialized');
         
-        // 2. Preparar la solicitud para Google STT
+        // 1. Convertir audio OGG a WAV/PCM
+        const rawAudio = await convertAudio(audioBuffer);
+        
+        logInfo('Audio convertido correctamente', {
+            originalSize: audioBuffer.length,
+            convertedSize: rawAudio.length
+        });
+
+        // 2. Preparar request para Google STT
         const request = {
             config: {
-                encoding: googleConfig.speech.encoding,
-                sampleRateHertz: googleConfig.speech.sampleRateHertz,
-                languageCode: googleConfig.speech.languageCode,
-                model: googleConfig.speech.model,
-                useEnhanced: true
+                encoding: 'LINEAR16',
+                sampleRateHertz: 48000,
+                languageCode: 'es-ES',
+                model: 'default',
+                enableAutomaticPunctuation: true,
+                useEnhanced: true,
+                metadata: {
+                    interactionType: 'DICTATION',
+                    microphoneDistance: 'NEARFIELD',
+                    originalMediaType: 'AUDIO_OGG',
+                    recordingDeviceType: 'SMARTPHONE'
+                }
             },
             audio: {
                 content: rawAudio.toString('base64')
             }
         };
 
-        logInfo('Enviando solicitud a Google Speech-to-Text', {
-            audioSize: rawAudio.length,
-            sampleRate: googleConfig.speech.sampleRateHertz
-        });
-        
-        // 3. Realizar la transcripción
-        const [response] = await speechClient.recognize(request);
-        
-        if (!response.results || response.results.length === 0) {
+        logInfo('Enviando solicitud a Google Speech-to-Text');
+
+        // 3. Enviar solicitud a Google
+        const response = await axios.post(
+            `${googleConfig.sttEndpoint}?key=${googleConfig.apiKey}`,
+            request,
+            {
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+
+        // 4. Procesar respuesta
+        if (!response.data.results) {
             throw new Error('No se detectó texto en el audio');
         }
 
-        // 4. Procesar y retornar resultados
-        const transcription = response.results
+        const transcription = response.data.results
             .map(result => result.alternatives[0].transcript)
             .join('\n');
 
         logInfo('Transcripción completada exitosamente', {
             length: transcription.length,
-            text: transcription.substring(0, 100) // Primeros 100 caracteres para debug
+            preview: transcription.substring(0, 100)
         });
 
         return transcription;
+
     } catch (error) {
         logError('Error en transcripción de audio', {
             error: error.message,
@@ -57,10 +76,10 @@ const transcribeAudio = async (audioBuffer) => {
     }
 };
 
-const convertOggToRaw = (audioBuffer) => {
+const convertAudio = (audioBuffer) => {
     return new Promise((resolve, reject) => {
         try {
-            logInfo('Iniciando conversión de audio OGG a RAW');
+            logInfo('Convirtiendo audio OGG a WAV/PCM');
             
             const inputStream = new Readable();
             inputStream.push(audioBuffer);
@@ -69,9 +88,10 @@ const convertOggToRaw = (audioBuffer) => {
             const chunks = [];
             
             ffmpeg(inputStream)
-                .toFormat('s16le')
+                .toFormat('wav')
                 .audioChannels(1)
-                .audioFrequency(googleConfig.speech.sampleRateHertz)
+                .audioFrequency(48000)
+                .audioCodec('pcm_s16le')
                 .on('error', (err) => {
                     logError('Error en conversión de audio', {
                         error: err.message,
@@ -80,12 +100,16 @@ const convertOggToRaw = (audioBuffer) => {
                     reject(err);
                 })
                 .on('end', () => {
-                    const rawAudio = Buffer.concat(chunks);
+                    const wavBuffer = Buffer.concat(chunks);
+                    // Extraer solo los datos PCM (eliminar cabecera WAV)
+                    const rawPcm = wavBuffer.slice(44); // 44 bytes es el tamaño de la cabecera WAV
+                    
                     logInfo('Conversión de audio completada', {
                         inputSize: audioBuffer.length,
-                        outputSize: rawAudio.length
+                        outputSize: rawPcm.length
                     });
-                    resolve(rawAudio);
+                    
+                    resolve(rawPcm);
                 })
                 .pipe()
                 .on('data', chunk => chunks.push(chunk));
