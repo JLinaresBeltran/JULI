@@ -254,24 +254,47 @@ class ConversationProcessor {
 
     static async processAudioMessage(message, conversation) {
         try {
-            logInfo('Procesando mensaje de audio', {
+            logInfo('Iniciando procesamiento de audio', {
                 messageId: message.id,
                 audioId: message.audio?.id,
-                conversationId: conversation.id
+                mimeType: message.audio?.mime_type
             });
-
+    
+            // Enviar mensaje de estado al usuario
+            await whatsappService.sendTextMessage(
+                message.from,
+                "🎧 Procesando tu mensaje de voz...",
+                message.metadata?.phoneNumberId
+            );
+    
+            // Validar estructura del mensaje
+            if (!message.audio?.id || !message.audio?.mime_type) {
+                throw new Error('Estructura de mensaje de audio inválida');
+            }
+    
+            // Obtener el contenido del audio
+            const audioBuffer = await whatsappService.downloadMedia(message.audio.id);
+            
+            // Validar formato de audio
+            const googleSTTService = require('../../integrations/googleSTT');
+            await googleSTTService.validateAudioFormat(audioBuffer, message.audio.mime_type);
+    
+            // Transcribir el audio
+            const transcription = await googleSTTService.transcribeAudio(
+                audioBuffer,
+                message.audio.mime_type
+            );
+    
+            // Validar transcripción
+            if (!transcription || transcription.trim().length === 0) {
+                throw new Error('Transcripción vacía');
+            }
+    
+            // Almacenar la transcripción
             if (!conversation.metadata.audioTranscriptions) {
                 conversation.metadata.audioTranscriptions = [];
             }
-
-            // Obtener el contenido del audio desde WhatsApp
-            const audioBuffer = await whatsappService.downloadMedia(message.audio.id);
-
-            // Transcribir el audio usando Google Speech-to-Text
-            const { transcribeAudio } = require('../integrations/googleSTT');
-            const transcription = await transcribeAudio(audioBuffer);
-
-            // Almacenar la transcripción
+    
             conversation.metadata.audioTranscriptions.push({
                 messageId: message.id,
                 transcription: transcription,
@@ -281,73 +304,76 @@ class ConversationProcessor {
                     mimeType: message.audio.mime_type
                 }
             });
-
+    
             // Enviar transcripción al usuario
             await whatsappService.sendTextMessage(
                 message.from,
-                `📝 Transcripción de tu mensaje de voz:\n\n${transcription}`,
+                `📝 Transcripción de tu mensaje:\n\n${transcription}`,
                 message.metadata?.phoneNumberId
             );
-
-            // Clasificar la transcripción
+    
+            // Procesar la transcripción como un mensaje normal
             const classification = await queryClassifierService.classifyQuery(transcription);
+            
+            // Almacenar clasificación
             this._storeClassification(conversation, message.id, classification);
-
+    
             // Procesar con Chatbase si la clasificación es válida
             if (classification.category !== 'unknown') {
-                try {
-                    const chatbaseResponse = await chatbaseClient.getResponse(
-                        transcription,
-                        classification.category
-                    );
-
-                    if (chatbaseResponse && chatbaseResponse.content) {
-                        await whatsappService.sendTextMessage(
-                            message.from,
-                            chatbaseResponse.content,
-                            message.metadata?.phoneNumberId
-                        );
-
-                        // Opcionalmente, convertir la respuesta a voz
-                        const { synthesizeSpeech } = require('../integrations/googleTTS');
-                        const audioResponse = await synthesizeSpeech(chatbaseResponse.content);
-                        
-                        // Enviar respuesta de voz
-                        await whatsappService.sendVoiceMessage(
-                            message.from,
-                            audioResponse,
-                            message.metadata?.phoneNumberId
-                        );
-                    }
-                } catch (error) {
-                    logError('Error procesando audio en Chatbase', {
-                        messageId: message.id,
-                        error: error.message
-                    });
-                    
-                    // Enviar mensaje de error al usuario
+                const chatbaseResponse = await chatbaseClient.getResponse(
+                    transcription,
+                    classification.category
+                );
+    
+                if (chatbaseResponse?.content) {
+                    // Enviar respuesta de texto
                     await whatsappService.sendTextMessage(
                         message.from,
-                        "Lo siento, tuve problemas procesando tu mensaje de voz. ¿Podrías intentar nuevamente o enviar tu consulta en texto?",
+                        chatbaseResponse.content,
+                        message.metadata?.phoneNumberId
+                    );
+    
+                    // Convertir respuesta a audio
+                    const { synthesizeSpeech } = require('../../integrations/googleTTS');
+                    const audioResponse = await synthesizeSpeech(chatbaseResponse.content);
+                    
+                    // Enviar respuesta de audio
+                    await whatsappService.sendVoiceMessage(
+                        message.from,
+                        audioResponse,
                         message.metadata?.phoneNumberId
                     );
                 }
             }
-
+    
+            return true;
+    
         } catch (error) {
-            logError('Error en procesamiento de audio', {
+            logError('Error procesando mensaje de audio', {
                 messageId: message.id,
                 error: error.message,
-                conversationId: conversation.id
+                stack: error.stack
             });
-
-            // Notificar al usuario del error
+    
+            // Enviar mensaje de error específico según el tipo de error
+            let errorMessage = "Lo siento, hubo un problema al procesar tu mensaje de voz. ";
+            
+            if (error.message.includes('formato')) {
+                errorMessage += "El formato de audio no es compatible.";
+            } else if (error.message.includes('tamaño')) {
+                errorMessage += "El mensaje de voz es demasiado largo.";
+            } else if (error.message.includes('transcripción vacía')) {
+                errorMessage += "No pude entender el contenido del mensaje.";
+            } else {
+                errorMessage += "Por favor, intenta nuevamente o envía tu mensaje como texto.";
+            }
+    
             await whatsappService.sendTextMessage(
                 message.from,
-                "Lo siento, no pude procesar tu mensaje de voz. Por favor, intenta nuevamente o envía tu mensaje en texto.",
+                errorMessage,
                 message.metadata?.phoneNumberId
             );
-
+    
             throw error;
         }
     }
