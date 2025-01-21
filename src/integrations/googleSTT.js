@@ -1,143 +1,109 @@
 // src/integrations/googleSTT.js
-const { Storage } = require('@google-cloud/storage');
 const speech = require('@google-cloud/speech');
+const { spawn } = require('child_process');
 const { logInfo, logError } = require('../utils/logger');
+const util = require('util');
+const stream = require('stream');
+const pipeline = util.promisify(stream.pipeline);
 
 class GoogleSTTService {
     constructor() {
         try {
-            // Inicializar cliente de Speech-to-Text
-            this.speechClient = new speech.SpeechClient({
-                keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS,
-                projectId: process.env.GOOGLE_PROJECT_ID
+            this.client = new speech.SpeechClient({
+                keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS
             });
-            
-            logInfo('Google STT Service initialized successfully');
+            logInfo('Google STT Service initialized');
         } catch (error) {
-            logError('Error initializing Google STT Service', {
-                error: error.message,
-                stack: error.stack
-            });
+            logError('Error initializing Google STT Service', { error });
             throw error;
         }
     }
 
-    async transcribeAudio(audioBuffer, mimeType) {
+    async convertOggToRaw(audioBuffer) {
+        return new Promise((resolve, reject) => {
+            const ffmpeg = spawn('ffmpeg', [
+                '-i', 'pipe:0',        // Input from pipe
+                '-f', 's16le',         // Output format: 16-bit little-endian
+                '-acodec', 'pcm_s16le', // Audio codec
+                '-ar', '16000',        // Sample rate
+                '-ac', '1',            // Mono channel
+                'pipe:1'               // Output to pipe
+            ]);
+
+            const chunks = [];
+            
+            ffmpeg.stdout.on('data', chunk => chunks.push(chunk));
+            ffmpeg.stderr.on('data', data => logInfo('FFmpeg:', data.toString()));
+            
+            ffmpeg.on('exit', code => {
+                if (code === 0) {
+                    resolve(Buffer.concat(chunks));
+                } else {
+                    reject(new Error(`FFmpeg exited with code ${code}`));
+                }
+            });
+
+            ffmpeg.stdin.write(audioBuffer);
+            ffmpeg.stdin.end();
+        });
+    }
+
+    async transcribeAudio(audioBuffer, mimeType = 'audio/ogg') {
         try {
-            logInfo('Starting audio transcription', {
+            logInfo('Iniciando transcripción de audio', {
                 bufferSize: audioBuffer.length,
                 mimeType
             });
 
-            // Configurar el encoding basado en el mime type
-            const encoding = this._getEncoding(mimeType);
-            if (!encoding) {
-                throw new Error(`Unsupported mime type: ${mimeType}`);
+            // Si es audio OGG (formato de WhatsApp), convertir a RAW
+            let processedBuffer = audioBuffer;
+            if (mimeType.includes('ogg')) {
+                logInfo('Convirtiendo audio OGG a RAW');
+                processedBuffer = await this.convertOggToRaw(audioBuffer);
             }
 
-            // Convertir buffer a base64
-            const audioContent = audioBuffer.toString('base64');
-
-            // Configurar request con parámetros optimizados
-            const request = {
-                audio: { content: audioContent },
-                config: {
-                    encoding: encoding,
-                    sampleRateHertz: 48000, // Ajustado para WhatsApp
-                    languageCode: 'es-ES',
-                    model: 'default',
-                    useEnhanced: true,
-                    enableAutomaticPunctuation: true,
-                    enableWordTimeOffsets: false,
-                    metadata: {
-                        audioTopic: 'legal consultation',
-                        interactionType: 'whatsapp voice message'
-                    },
-                    maxAlternatives: 1
-                }
+            const audioBytes = processedBuffer.toString('base64');
+            
+            const config = {
+                encoding: 'LINEAR16',
+                sampleRateHertz: 16000,
+                languageCode: 'es-ES',
+                enableAutomaticPunctuation: true,
+                model: 'default',
+                useEnhanced: true
             };
 
-            logInfo('Sending transcription request to Google', {
-                encoding,
-                languageCode: request.config.languageCode
-            });
+            const request = {
+                audio: { content: audioBytes },
+                config: config
+            };
 
-            // Realizar la transcripción
-            const [response] = await this.speechClient.recognize(request);
+            logInfo('Enviando solicitud a Google Speech-to-Text');
+            const [response] = await this.client.recognize(request);
 
-            // Validar respuesta
             if (!response.results || response.results.length === 0) {
-                throw new Error('No transcription results received');
+                throw new Error('No se obtuvieron resultados de transcripción');
             }
 
-            // Procesar y concatenar resultados
             const transcription = response.results
                 .map(result => result.alternatives[0].transcript)
-                .join(' ');
+                .join('\n');
 
-            logInfo('Transcription completed successfully', {
-                transcriptionLength: transcription.length,
-                resultCount: response.results.length
+            logInfo('Transcripción completada exitosamente', {
+                length: transcription.length
             });
 
             return transcription;
 
         } catch (error) {
-            logError('Transcription error', {
+            logError('Error en transcripción de audio', {
                 error: error.message,
                 stack: error.stack
-            });
-            throw error;
-        }
-    }
-
-    _getEncoding(mimeType) {
-        const encodingMap = {
-            'audio/ogg': 'OGG_OPUS',
-            'audio/mpeg': 'MP3',
-            'audio/mp4': 'MP4',
-            'audio/wav': 'LINEAR16',
-            'audio/x-wav': 'LINEAR16'
-        };
-
-        return encodingMap[mimeType];
-    }
-
-    async validateAudioFormat(buffer, mimeType) {
-        try {
-            if (!buffer || buffer.length === 0) {
-                throw new Error('Empty audio buffer');
-            }
-
-            const supportedMimeTypes = [
-                'audio/ogg',
-                'audio/mpeg',
-                'audio/mp4',
-                'audio/wav',
-                'audio/x-wav'
-            ];
-
-            if (!supportedMimeTypes.includes(mimeType)) {
-                throw new Error(`Unsupported audio format: ${mimeType}`);
-            }
-
-            // Validar tamaño máximo (10MB)
-            const maxSize = 10 * 1024 * 1024;
-            if (buffer.length > maxSize) {
-                throw new Error('Audio file too large');
-            }
-
-            return true;
-        } catch (error) {
-            logError('Audio validation error', {
-                error: error.message,
-                mimeType,
-                bufferSize: buffer?.length
             });
             throw error;
         }
     }
 }
 
-// Exportar una instancia única
+// Exportar una única instancia del servicio
 module.exports = new GoogleSTTService();
