@@ -109,4 +109,5 @@ const convertToWhatsappFormat = (audioBuffer) => {
     });
 };
 
+
 module.exports = { synthesizeSpeech };
