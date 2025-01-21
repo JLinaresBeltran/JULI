@@ -328,6 +328,7 @@ class ConversationProcessor {
                 error: error.message,
                 messageId: message.id
             });
+            
     
             await whatsappService.sendTextMessage(
                 message.from,
