@@ -129,32 +129,69 @@ class WhatsAppService {
 
     async downloadMedia(mediaId) {
         try {
-            logInfo('Downloading media', { mediaId });
+            logInfo('Iniciando descarga de medio', { mediaId });
             
-            // Primero obtener la URL del medio
+            if (!mediaId) {
+                throw new Error('Media ID es requerido');
+            }
+    
+            // Obtener la URL del medio
             const mediaUrl = `${this.baseUrl}/${this.apiVersion}/${mediaId}`;
+            
+            logInfo('Obteniendo información del medio', { mediaUrl });
+            
             const mediaInfoResponse = await axios.get(mediaUrl, {
                 headers: {
                     'Authorization': `Bearer ${this.accessToken}`
                 }
             });
-
-            // Descargar el contenido del medio
-            const downloadResponse = await axios.get(mediaInfoResponse.data.url, {
-                headers: {
-                    'Authorization': `Bearer ${this.accessToken}`
-                },
-                responseType: 'arraybuffer'
-            });
-
-            logInfo('Media downloaded successfully', { 
-                mediaId,
-                size: downloadResponse.data.length
-            });
-
-            return Buffer.from(downloadResponse.data);
+    
+            if (!mediaInfoResponse.data?.url) {
+                throw new Error('No se pudo obtener URL de descarga del medio');
+            }
+    
+            logInfo('URL de medio obtenida, iniciando descarga');
+    
+            // Descargar el contenido del medio con retry
+            const maxRetries = 3;
+            let lastError = null;
+    
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                try {
+                    const downloadResponse = await axios.get(mediaInfoResponse.data.url, {
+                        headers: {
+                            'Authorization': `Bearer ${this.accessToken}`
+                        },
+                        responseType: 'arraybuffer',
+                        timeout: 10000 // 10 segundos timeout
+                    });
+    
+                    logInfo('Medio descargado exitosamente', { 
+                        mediaId,
+                        size: downloadResponse.data.length,
+                        attempt
+                    });
+    
+                    return Buffer.from(downloadResponse.data);
+                    
+                } catch (error) {
+                    lastError = error;
+                    logError('Error en intento de descarga', {
+                        attempt,
+                        mediaId,
+                        error: error.message
+                    });
+    
+                    if (attempt < maxRetries) {
+                        await new Promise(resolve => setTimeout(resolve, attempt * 1000));
+                    }
+                }
+            }
+    
+            throw lastError || new Error('No se pudo descargar el medio después de múltiples intentos');
+    
         } catch (error) {
-            logError('Failed to download media', {
+            logError('Error en descarga de medio', {
                 error: error.message,
                 mediaId,
                 responseData: error.response?.data,
