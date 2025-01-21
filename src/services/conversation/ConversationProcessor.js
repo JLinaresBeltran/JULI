@@ -264,36 +264,40 @@ class ConversationProcessor {
                 conversation.metadata.audioTranscriptions = [];
             }
 
-            // Aquí iría la lógica de transcripción real
-            const mockTranscription = "Transcripción simulada para pruebas";
-            
+            // Obtener el contenido del audio desde WhatsApp
+            const audioBuffer = await whatsappService.downloadMedia(message.audio.id);
+
+            // Transcribir el audio usando Google Speech-to-Text
+            const { transcribeAudio } = require('../integrations/googleSTT');
+            const transcription = await transcribeAudio(audioBuffer);
+
+            // Almacenar la transcripción
             conversation.metadata.audioTranscriptions.push({
                 messageId: message.id,
-                transcription: mockTranscription,
-                timestamp: new Date()
+                transcription: transcription,
+                timestamp: new Date(),
+                metadata: {
+                    duration: message.audio.duration,
+                    mimeType: message.audio.mime_type
+                }
             });
 
+            // Enviar transcripción al usuario
+            await whatsappService.sendTextMessage(
+                message.from,
+                `📝 Transcripción de tu mensaje de voz:\n\n${transcription}`,
+                message.metadata?.phoneNumberId
+            );
+
             // Clasificar la transcripción
-            const classification = await queryClassifierService.classifyQuery(mockTranscription);
+            const classification = await queryClassifierService.classifyQuery(transcription);
             this._storeClassification(conversation, message.id, classification);
 
             // Procesar con Chatbase si la clasificación es válida
             if (classification.category !== 'unknown') {
                 try {
-                    // Obtener el mensaje de contexto según la categoría
-                    const contextMessage = this.getContextMessageByCategory(classification.category);
-                    
-                    // Enviar primero el mensaje de contexto a Chatbase
-                    if (contextMessage) {
-                        await chatbaseClient.getResponse(
-                            contextMessage,
-                            classification.category
-                        );
-                    }
-
-                    // Enviar la transcripción
                     const chatbaseResponse = await chatbaseClient.getResponse(
-                        mockTranscription,
+                        transcription,
                         classification.category
                     );
 
@@ -303,12 +307,30 @@ class ConversationProcessor {
                             chatbaseResponse.content,
                             message.metadata?.phoneNumberId
                         );
+
+                        // Opcionalmente, convertir la respuesta a voz
+                        const { synthesizeSpeech } = require('../integrations/googleTTS');
+                        const audioResponse = await synthesizeSpeech(chatbaseResponse.content);
+                        
+                        // Enviar respuesta de voz
+                        await whatsappService.sendVoiceMessage(
+                            message.from,
+                            audioResponse,
+                            message.metadata?.phoneNumberId
+                        );
                     }
                 } catch (error) {
                     logError('Error procesando audio en Chatbase', {
                         messageId: message.id,
                         error: error.message
                     });
+                    
+                    // Enviar mensaje de error al usuario
+                    await whatsappService.sendTextMessage(
+                        message.from,
+                        "Lo siento, tuve problemas procesando tu mensaje de voz. ¿Podrías intentar nuevamente o enviar tu consulta en texto?",
+                        message.metadata?.phoneNumberId
+                    );
                 }
             }
 
@@ -318,6 +340,14 @@ class ConversationProcessor {
                 error: error.message,
                 conversationId: conversation.id
             });
+
+            // Notificar al usuario del error
+            await whatsappService.sendTextMessage(
+                message.from,
+                "Lo siento, no pude procesar tu mensaje de voz. Por favor, intenta nuevamente o envía tu mensaje en texto.",
+                message.metadata?.phoneNumberId
+            );
+
             throw error;
         }
     }

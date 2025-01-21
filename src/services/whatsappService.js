@@ -1,4 +1,5 @@
 const axios = require('axios');
+const FormData = require('form-data');
 const { logInfo, logError } = require('../utils/logger');
 
 class WhatsAppService {
@@ -121,6 +122,92 @@ class WhatsAppService {
                 userName,
                 phoneNumberId: phoneNumberId || this.phoneNumberId,
                 stack: error.stack
+            });
+            throw error;
+        }
+    }
+
+    async downloadMedia(mediaId) {
+        try {
+            logInfo('Downloading media', { mediaId });
+            
+            // Primero obtener la URL del medio
+            const mediaUrl = `${this.baseUrl}/${this.apiVersion}/${mediaId}`;
+            const mediaInfoResponse = await axios.get(mediaUrl, {
+                headers: {
+                    'Authorization': `Bearer ${this.accessToken}`
+                }
+            });
+
+            // Descargar el contenido del medio
+            const downloadResponse = await axios.get(mediaInfoResponse.data.url, {
+                headers: {
+                    'Authorization': `Bearer ${this.accessToken}`
+                },
+                responseType: 'arraybuffer'
+            });
+
+            logInfo('Media downloaded successfully', { 
+                mediaId,
+                size: downloadResponse.data.length
+            });
+
+            return Buffer.from(downloadResponse.data);
+        } catch (error) {
+            logError('Failed to download media', {
+                error: error.message,
+                mediaId,
+                responseData: error.response?.data,
+                errorStatus: error.response?.status
+            });
+            throw error;
+        }
+    }
+
+    async sendVoiceMessage(to, audioBuffer, phoneNumberId = null) {
+        try {
+            logInfo('Preparing to send voice message', {
+                to,
+                bufferSize: audioBuffer.length,
+                phoneNumberId: phoneNumberId || this.phoneNumberId
+            });
+
+            // Subir el audio a WhatsApp
+            const usePhoneNumberId = phoneNumberId || this.phoneNumberId;
+            const uploadUrl = `${this.baseUrl}/${this.apiVersion}/${usePhoneNumberId}/media`;
+            
+            const formData = new FormData();
+            formData.append('file', audioBuffer, {
+                filename: 'audio.mp3',
+                contentType: 'audio/mp3'
+            });
+            formData.append('messaging_product', 'whatsapp');
+            formData.append('type', 'audio/mp3');
+
+            const uploadResponse = await axios.post(uploadUrl, formData, {
+                headers: {
+                    ...formData.getHeaders(),
+                    'Authorization': `Bearer ${this.accessToken}`
+                }
+            });
+
+            logInfo('Audio uploaded successfully', {
+                mediaId: uploadResponse.data.id
+            });
+
+            // Enviar el mensaje de audio
+            return this.sendMessage(to, {
+                type: 'audio',
+                audio: { id: uploadResponse.data.id }
+            }, phoneNumberId);
+
+        } catch (error) {
+            logError('Failed to send voice message', {
+                error: error.message,
+                to,
+                phoneNumberId: phoneNumberId || this.phoneNumberId,
+                responseData: error.response?.data,
+                errorStatus: error.response?.status
             });
             throw error;
         }

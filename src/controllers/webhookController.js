@@ -64,7 +64,8 @@ function formatMessage(message, context) {
                 formattedMessage.audio = {
                     id: message.audio.id,
                     mimeType: message.audio.mime_type,
-                    voice: message.audio.voice || false
+                    voice: message.audio.voice || false,
+                    duration: message.audio.duration
                 };
                 break;
             default:
@@ -173,6 +174,12 @@ const webhookController = {
     async _processMessages(messages, context, results) {
         for (const message of messages) {
             try {
+                logInfo('Processing incoming message', {
+                    messageId: message.id,
+                    type: message.type,
+                    from: message.from
+                });
+
                 const conversation = conversationService.getConversation(message.from);
                 const isNewUser = !conversation;
 
@@ -181,20 +188,39 @@ const webhookController = {
                 }
 
                 const formattedMessage = formatMessage(message, context);
+
+                // Procesar audio antes de enviar a conversationService si es necesario
+                if (message.type === 'audio') {
+                    logInfo('Processing audio message', {
+                        messageId: message.id,
+                        duration: message.audio?.duration,
+                        mimeType: message.audio?.mime_type
+                    });
+                }
+
+                // Procesar el mensaje con el servicio de conversación
                 await conversationService.processIncomingMessage(formattedMessage, {
                     createIfNotExists: true,
                     skipClassification: isNewUser
                 });
 
-                if (message.type === 'text') {
+                // Marcar como leído tanto mensajes de texto como de audio
+                if (message.type === 'text' || message.type === 'audio') {
                     await whatsappService.markAsRead(message.id, context.metadata?.phone_number_id);
                 }
 
                 this._broadcastUpdates(conversation);
-                this._addResult(results, message, 'success', { isFirstInteraction: isNewUser });
+                this._addResult(results, message, 'success', { 
+                    isFirstInteraction: isNewUser,
+                    messageType: message.type
+                });
 
             } catch (error) {
-                logError('Message processing error', { error: error.message });
+                logError('Message processing error', { 
+                    error: error.message,
+                    messageId: message?.id,
+                    messageType: message?.type
+                });
                 this._addResult(results, message, 'error', error);
             }
         }
