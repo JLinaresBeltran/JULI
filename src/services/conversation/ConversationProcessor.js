@@ -142,27 +142,23 @@ class ConversationProcessor {
                 conversationId: conversation.id
             });
     
-            // Verificar si es el primer mensaje
             if (this._isFirstMessage(conversation)) {
                 logInfo('Procesando primer mensaje - Solo bienvenida', { content });
                 return;
             }
     
-            // Si ya existe una categoría en la conversación, usarla
             let classification;
             if (conversation.currentCategory && conversation.currentCategory !== 'unknown') {
                 classification = {
                     category: conversation.currentCategory,
-                    confidence: 1.0  // Mantener la categoría con confianza máxima
+                    confidence: 1.0
                 };
                 logInfo('Usando categoría existente', { category: classification.category });
             } else {
-                // Clasificar nuevo mensaje
                 logInfo('Procesando mensaje subsiguiente - Activando clasificación');
                 classification = await queryClassifierService.classifyQuery(content);
             }
     
-            // Almacenar resultado de clasificación
             this._storeClassification(conversation, message.id, classification);
     
             logInfo('Mensaje clasificado exitosamente', {
@@ -172,10 +168,8 @@ class ConversationProcessor {
                 conversationId: conversation.id
             });
     
-            // Si la categoría es válida, procesar con Chatbase
             if (classification.category !== 'unknown') {
                 try {
-                    // Verificar si es la primera interacción con Chatbase
                     const isFirstInteraction = !conversation.metadata.chatbaseInitialized;
                     
                     if (isFirstInteraction) {
@@ -185,31 +179,69 @@ class ConversationProcessor {
                         });
                     }
     
-                    // Enviar mensaje a Chatbase
                     const chatbaseResponse = await chatbaseClient.getResponse(
                         content,
                         classification.category,
                         isFirstInteraction
                     );
     
-                    // Procesar respuesta
                     if (chatbaseResponse && chatbaseResponse.content) {
-                        await whatsappService.sendTextMessage(
-                            message.from,
-                            chatbaseResponse.content,
-                            message.metadata?.phoneNumberId
-                        );
+                        const responseContent = chatbaseResponse.content;
+
+                        // Verificar si la respuesta contiene la frase clave
+                        if (responseContent.includes("Esto es correcto o falta algo")) {
+                            try {
+                                logInfo('Detectada frase clave para TTS - Iniciando conversión', {
+                                    textLength: responseContent.length
+                                });
+                                
+                                const audioBuffer = await synthesizeSpeech(responseContent);
+                                
+                                await whatsappService.sendVoiceMessage(
+                                    message.from,
+                                    audioBuffer,
+                                    message.metadata?.phoneNumberId
+                                );
+
+                                logInfo('Audio enviado exitosamente', {
+                                    messageId: message.id,
+                                    category: classification.category,
+                                    audioSize: audioBuffer.length
+                                });
+                            } catch (ttsError) {
+                                logError('Error en conversión a voz', {
+                                    error: ttsError.message,
+                                    messageId: message.id
+                                });
+                                
+                                // Si falla el audio, enviar como texto
+                                await whatsappService.sendTextMessage(
+                                    message.from,
+                                    responseContent,
+                                    message.metadata?.phoneNumberId
+                                );
+                            }
+                        } else {
+                            // Enviar respuesta normal como texto
+                            await whatsappService.sendTextMessage(
+                                message.from,
+                                responseContent,
+                                message.metadata?.phoneNumberId
+                            );
+                        }
     
-                        logInfo('Respuesta de Chatbase enviada exitosamente', {
+                        logInfo('Respuesta de Chatbase procesada', {
                             messageId: message.id,
                             category: classification.category,
-                            responseLength: chatbaseResponse.content.length,
-                            isFirstInteraction
+                            responseLength: responseContent.length,
+                            isFirstInteraction,
+                            wasAudio: responseContent.includes("Esto es correcto o falta algo")
                         });
     
                         this._addToProcessingHistory(conversation, {
                             messageId: message.id,
-                            type: 'chatbase_response',
+                            type: responseContent.includes("Esto es correcto o falta algo") ? 
+                                  'voice_response' : 'chatbase_response',
                             category: classification.category,
                             timestamp: new Date(),
                             success: true,

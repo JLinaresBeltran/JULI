@@ -1,17 +1,13 @@
-// src/integrations/googleTTS.js
 const { logInfo, logError } = require('../utils/logger');
 const ffmpeg = require('fluent-ffmpeg');
-const { Readable, Writable } = require('stream');
+const { Readable } = require('stream');
 const axios = require('axios');
-const googleConfig = require('../config/google');
+const { googleConfig } = require('../config/google');
 
 const synthesizeSpeech = async (text) => {
     try {
-        logInfo('Iniciando síntesis de texto a voz', {
-            textLength: text.length
-        });
+        logInfo('Iniciando síntesis de texto a voz', { textLength: text.length });
 
-        // 1. Preparar request para Google TTS
         const request = {
             input: { text },
             voice: {
@@ -28,28 +24,23 @@ const synthesizeSpeech = async (text) => {
             }
         };
 
-        logInfo('Enviando solicitud a Google TTS');
-
-        // 2. Enviar solicitud a Google
-        const response = await axios.post(
-            `${googleConfig.ttsEndpoint}?key=${googleConfig.apiKey}`,
-            request,
-            {
-                headers: {
-                    'Content-Type': 'application/json'
-                }
+        const response = await axios({
+            method: 'POST',
+            url: `${googleConfig.ttsEndpoint}?key=${googleConfig.apiKey}`,
+            data: request,
+            headers: {
+                'Content-Type': 'application/json'
             }
-        );
+        });
 
         if (!response.data.audioContent) {
             throw new Error('No se generó contenido de audio');
         }
 
-        // 3. Convertir el audio a formato OGG (Opus) para WhatsApp
         const audioBuffer = Buffer.from(response.data.audioContent, 'base64');
-        const whatsappAudio = await convertToWhatsappFormat(audioBuffer);
+        const whatsappAudio = await convertToOgg(audioBuffer);
 
-        logInfo('Síntesis y conversión completada exitosamente', {
+        logInfo('Síntesis completada exitosamente', {
             inputLength: text.length,
             outputSize: whatsappAudio.length
         });
@@ -65,11 +56,9 @@ const synthesizeSpeech = async (text) => {
     }
 };
 
-const convertToWhatsappFormat = (audioBuffer) => {
+const convertToOgg = (audioBuffer) => {
     return new Promise((resolve, reject) => {
         try {
-            logInfo('Convirtiendo audio a formato WhatsApp');
-            
             const inputStream = new Readable();
             inputStream.push(audioBuffer);
             inputStream.push(null);
@@ -81,9 +70,9 @@ const convertToWhatsappFormat = (audioBuffer) => {
                 .audioChannels(1)
                 .audioFrequency(48000)
                 .audioCodec('libopus')
-                .audioBitrate('32k') // WhatsApp usa bitrate bajo para mensajes de voz
+                .audioBitrate('32k')
                 .on('error', (err) => {
-                    logError('Error en conversión a formato WhatsApp', {
+                    logError('Error en conversión a OGG', {
                         error: err.message,
                         command: err.command
                     });
@@ -91,7 +80,7 @@ const convertToWhatsappFormat = (audioBuffer) => {
                 })
                 .on('end', () => {
                     const oggBuffer = Buffer.concat(chunks);
-                    logInfo('Conversión a formato WhatsApp completada', {
+                    logInfo('Conversión a OGG completada', {
                         inputSize: audioBuffer.length,
                         outputSize: oggBuffer.length
                     });
@@ -108,6 +97,5 @@ const convertToWhatsappFormat = (audioBuffer) => {
         }
     });
 };
-
 
 module.exports = { synthesizeSpeech };
