@@ -8,7 +8,6 @@ const transcribeAudio = async (audioBuffer, mimeType = 'audio/ogg') => {
     try {
         logInfo('Google STT Service initialized');
         
-        // 1. Convertir audio a formato compatible
         const rawAudio = await convertAudio(audioBuffer);
         
         logInfo('Audio convertido correctamente', {
@@ -16,7 +15,6 @@ const transcribeAudio = async (audioBuffer, mimeType = 'audio/ogg') => {
             convertedSize: rawAudio.length
         });
 
-        // 2. Preparar request para Google STT
         const request = {
             config: {
                 encoding: 'LINEAR16',
@@ -24,7 +22,6 @@ const transcribeAudio = async (audioBuffer, mimeType = 'audio/ogg') => {
                 languageCode: 'es-ES',
                 model: 'phone_call',
                 enableAutomaticPunctuation: true,
-                useEnhanced: true,
                 metadata: {
                     interactionType: 'DICTATION',
                     microphoneDistance: 'NEARFIELD',
@@ -39,14 +36,12 @@ const transcribeAudio = async (audioBuffer, mimeType = 'audio/ogg') => {
 
         logInfo('Enviando solicitud a Google Speech-to-Text');
 
-        // 3. Enviar solicitud a Google
         const response = await axios.post(
-            googleConfig.sttEndpoint,
+            `${googleConfig.sttEndpoint}?key=${googleConfig.apiKey}`,
             request,
             {
                 headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${googleConfig.apiKey}`
+                    'Content-Type': 'application/json'
                 }
             }
         );
@@ -60,8 +55,7 @@ const transcribeAudio = async (audioBuffer, mimeType = 'audio/ogg') => {
             .join(' ');
 
         logInfo('Transcripción completada exitosamente', {
-            length: transcription.length,
-            preview: transcription.substring(0, 100)
+            length: transcription.length
         });
 
         return transcription;
@@ -100,7 +94,6 @@ const convertAudio = (audioBuffer) => {
                 })
                 .on('end', () => {
                     const wavBuffer = Buffer.concat(chunks);
-                    // Extraer solo los datos PCM (eliminar cabecera WAV)
                     const rawPcm = wavBuffer.slice(44);
                     
                     logInfo('Conversión de audio completada', {
