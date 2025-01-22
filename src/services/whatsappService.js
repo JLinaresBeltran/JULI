@@ -231,8 +231,7 @@ class WhatsAppService {
             return this.sendMessage(to, {
                 type: 'audio',
                 audio: { 
-                    id: uploadResponse.data.id,
-                    mime_type: 'audio/ogg'
+                    id: uploadResponse.data.id 
                 }
             }, phoneNumberId);
 
