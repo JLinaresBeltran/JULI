@@ -1,15 +1,14 @@
-// src/integrations/googleSTT.js
 const { logInfo, logError } = require('../utils/logger');
 const ffmpeg = require('fluent-ffmpeg');
 const { Readable } = require('stream');
 const axios = require('axios');
-const googleConfig = require('../config/google');
+const { googleConfig } = require('../config/google');
 
-const transcribeAudio = async (audioBuffer) => {
+const transcribeAudio = async (audioBuffer, mimeType = 'audio/ogg') => {
     try {
         logInfo('Google STT Service initialized');
         
-        // 1. Convertir audio OGG a WAV/PCM
+        // 1. Convertir audio a formato compatible
         const rawAudio = await convertAudio(audioBuffer);
         
         logInfo('Audio convertido correctamente', {
@@ -23,13 +22,13 @@ const transcribeAudio = async (audioBuffer) => {
                 encoding: 'LINEAR16',
                 sampleRateHertz: 48000,
                 languageCode: 'es-ES',
-                model: 'default',
+                model: 'phone_call',
                 enableAutomaticPunctuation: true,
                 useEnhanced: true,
                 metadata: {
                     interactionType: 'DICTATION',
                     microphoneDistance: 'NEARFIELD',
-                    originalMediaType: 'AUDIO_OGG',
+                    originalMediaType: mimeType,
                     recordingDeviceType: 'SMARTPHONE'
                 }
             },
@@ -42,23 +41,23 @@ const transcribeAudio = async (audioBuffer) => {
 
         // 3. Enviar solicitud a Google
         const response = await axios.post(
-            `${googleConfig.sttEndpoint}?key=${googleConfig.apiKey}`,
+            googleConfig.sttEndpoint,
             request,
             {
                 headers: {
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${googleConfig.apiKey}`
                 }
             }
         );
 
-        // 4. Procesar respuesta
         if (!response.data.results) {
             throw new Error('No se detectó texto en el audio');
         }
 
         const transcription = response.data.results
             .map(result => result.alternatives[0].transcript)
-            .join('\n');
+            .join(' ');
 
         logInfo('Transcripción completada exitosamente', {
             length: transcription.length,
@@ -102,7 +101,7 @@ const convertAudio = (audioBuffer) => {
                 .on('end', () => {
                     const wavBuffer = Buffer.concat(chunks);
                     // Extraer solo los datos PCM (eliminar cabecera WAV)
-                    const rawPcm = wavBuffer.slice(44); // 44 bytes es el tamaño de la cabecera WAV
+                    const rawPcm = wavBuffer.slice(44);
                     
                     logInfo('Conversión de audio completada', {
                         inputSize: audioBuffer.length,
