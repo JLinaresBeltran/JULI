@@ -10,24 +10,13 @@ const transcribeAudio = async (audioBuffer, mimeType = 'audio/ogg') => {
         
         const rawAudio = await convertAudio(audioBuffer);
         
-        logInfo('Audio convertido correctamente', {
-            originalSize: audioBuffer.length,
-            convertedSize: rawAudio.length
-        });
-
         const request = {
             config: {
                 encoding: 'LINEAR16',
                 sampleRateHertz: 48000,
                 languageCode: 'es-ES',
-                model: 'phone_call',
-                enableAutomaticPunctuation: true,
-                metadata: {
-                    interactionType: 'DICTATION',
-                    microphoneDistance: 'NEARFIELD',
-                    originalMediaType: mimeType,
-                    recordingDeviceType: 'SMARTPHONE'
-                }
+                model: 'default',
+                enableAutomaticPunctuation: true
             },
             audio: {
                 content: rawAudio.toString('base64')
@@ -36,15 +25,14 @@ const transcribeAudio = async (audioBuffer, mimeType = 'audio/ogg') => {
 
         logInfo('Enviando solicitud a Google Speech-to-Text');
 
-        const response = await axios.post(
-            `${googleConfig.sttEndpoint}?key=${googleConfig.apiKey}`,
-            request,
-            {
-                headers: {
-                    'Content-Type': 'application/json'
-                }
+        const response = await axios({
+            method: 'POST',
+            url: `${googleConfig.sttEndpoint}?key=${googleConfig.apiKey}`,
+            data: request,
+            headers: {
+                'Content-Type': 'application/json'
             }
-        );
+        });
 
         if (!response.data.results) {
             throw new Error('No se detectó texto en el audio');
@@ -81,10 +69,9 @@ const convertAudio = (audioBuffer) => {
             const chunks = [];
             
             ffmpeg(inputStream)
-                .toFormat('wav')
+                .toFormat('s16le')
                 .audioChannels(1)
                 .audioFrequency(48000)
-                .audioCodec('pcm_s16le')
                 .on('error', (err) => {
                     logError('Error en conversión de audio', {
                         error: err.message,
@@ -93,8 +80,7 @@ const convertAudio = (audioBuffer) => {
                     reject(err);
                 })
                 .on('end', () => {
-                    const wavBuffer = Buffer.concat(chunks);
-                    const rawPcm = wavBuffer.slice(44);
+                    const rawPcm = Buffer.concat(chunks);
                     
                     logInfo('Conversión de audio completada', {
                         inputSize: audioBuffer.length,
