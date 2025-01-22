@@ -6,9 +6,7 @@ const { googleConfig } = require('../config/google');
 
 const synthesizeSpeech = async (text) => {
     try {
-        logInfo('Iniciando síntesis de texto a voz', { 
-            textLength: text.length 
-        });
+        logInfo('Iniciando síntesis de texto a voz', { textLength: text.length });
 
         const request = {
             input: { text },
@@ -18,11 +16,10 @@ const synthesizeSpeech = async (text) => {
                 ssmlGender: 'FEMALE'
             },
             audioConfig: {
-                audioEncoding: 'LINEAR16',
-                sampleRateHertz: 48000,
+                audioEncoding: 'MP3',
+                sampleRateHertz: 24000,
                 pitch: 0,
-                speakingRate: 1,
-                effectsProfileId: ['telephony-class-application']
+                speakingRate: 1
             }
         };
 
@@ -30,9 +27,7 @@ const synthesizeSpeech = async (text) => {
             method: 'POST',
             url: `${googleConfig.ttsEndpoint}?key=${googleConfig.apiKey}`,
             data: request,
-            headers: {
-                'Content-Type': 'application/json'
-            }
+            headers: { 'Content-Type': 'application/json' }
         });
 
         if (!response.data.audioContent) {
@@ -40,25 +35,16 @@ const synthesizeSpeech = async (text) => {
         }
 
         const audioBuffer = Buffer.from(response.data.audioContent, 'base64');
-        const oggBuffer = await convertToOgg(audioBuffer);
-
-        logInfo('Síntesis completada exitosamente', {
-            inputLength: text.length,
-            outputSize: oggBuffer.length
-        });
+        const oggBuffer = await convertToOggOpus(audioBuffer);
 
         return oggBuffer;
-
     } catch (error) {
-        logError('Error en síntesis de texto a voz', {
-            error: error.message,
-            stack: error.stack
-        });
+        logError('Error en síntesis de texto a voz', { error: error.message });
         throw error;
     }
 };
 
-const convertToOgg = (audioBuffer) => {
+const convertToOggOpus = (audioBuffer) => {
     return new Promise((resolve, reject) => {
         try {
             const inputStream = new Readable();
@@ -70,11 +56,11 @@ const convertToOgg = (audioBuffer) => {
             ffmpeg(inputStream)
                 .toFormat('ogg')
                 .audioChannels(1)
-                .audioFrequency(48000)
+                .audioFrequency(24000)
                 .audioCodec('libopus')
                 .audioBitrate('32k')
                 .on('error', (err) => {
-                    logError('Error en conversión a OGG', {
+                    logError('Error en conversión de audio', {
                         error: err.message,
                         command: err.command
                     });
@@ -82,7 +68,7 @@ const convertToOgg = (audioBuffer) => {
                 })
                 .on('end', () => {
                     const oggBuffer = Buffer.concat(chunks);
-                    logInfo('Conversión a OGG completada', {
+                    logInfo('Audio convertido exitosamente', {
                         inputSize: audioBuffer.length,
                         outputSize: oggBuffer.length
                     });
