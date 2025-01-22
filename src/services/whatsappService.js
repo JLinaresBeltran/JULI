@@ -24,7 +24,6 @@ class WhatsAppService {
 
     async sendMessage(to, content, phoneNumberId = null) {
         try {
-            // Usar el ID del teléfono recibido si está disponible
             const usePhoneNumberId = phoneNumberId || this.phoneNumberId;
             const url = `${this.baseUrl}/${this.apiVersion}/${usePhoneNumberId}/messages`;
             
@@ -135,7 +134,6 @@ class WhatsAppService {
                 throw new Error('Media ID es requerido');
             }
     
-            // Obtener la URL del medio
             const mediaUrl = `${this.baseUrl}/${this.apiVersion}/${mediaId}`;
             
             logInfo('Obteniendo información del medio', { mediaUrl });
@@ -152,7 +150,6 @@ class WhatsAppService {
     
             logInfo('URL de medio obtenida, iniciando descarga');
     
-            // Descargar el contenido del medio con retry
             const maxRetries = 3;
             let lastError = null;
     
@@ -163,7 +160,7 @@ class WhatsAppService {
                             'Authorization': `Bearer ${this.accessToken}`
                         },
                         responseType: 'arraybuffer',
-                        timeout: 10000 // 10 segundos timeout
+                        timeout: 10000
                     });
     
                     logInfo('Medio descargado exitosamente', { 
@@ -203,23 +200,22 @@ class WhatsAppService {
 
     async sendVoiceMessage(to, audioBuffer, phoneNumberId = null) {
         try {
-            logInfo('Preparing to send voice message', {
+            logInfo('Preparando envío de mensaje de voz', {
                 to,
                 bufferSize: audioBuffer.length,
                 phoneNumberId: phoneNumberId || this.phoneNumberId
             });
 
-            // Subir el audio a WhatsApp
             const usePhoneNumberId = phoneNumberId || this.phoneNumberId;
             const uploadUrl = `${this.baseUrl}/${this.apiVersion}/${usePhoneNumberId}/media`;
             
             const formData = new FormData();
             formData.append('file', audioBuffer, {
-                filename: 'audio.mp3',
-                contentType: 'audio/mp3'
+                filename: 'audio.ogg',
+                contentType: 'audio/ogg; codecs=opus'
             });
             formData.append('messaging_product', 'whatsapp');
-            formData.append('type', 'audio/mp3');
+            formData.append('type', 'audio/ogg');
 
             const uploadResponse = await axios.post(uploadUrl, formData, {
                 headers: {
@@ -228,18 +224,20 @@ class WhatsAppService {
                 }
             });
 
-            logInfo('Audio uploaded successfully', {
+            logInfo('Audio subido exitosamente', {
                 mediaId: uploadResponse.data.id
             });
 
-            // Enviar el mensaje de audio
             return this.sendMessage(to, {
                 type: 'audio',
-                audio: { id: uploadResponse.data.id }
+                audio: { 
+                    id: uploadResponse.data.id,
+                    mime_type: 'audio/ogg'
+                }
             }, phoneNumberId);
 
         } catch (error) {
-            logError('Failed to send voice message', {
+            logError('Error al enviar mensaje de voz', {
                 error: error.message,
                 to,
                 phoneNumberId: phoneNumberId || this.phoneNumberId,
@@ -252,7 +250,6 @@ class WhatsAppService {
 
     async markAsRead(messageId, receivedPhoneNumberId = null) {
         try {
-            // Si el ID del teléfono recibido es diferente del configurado, loggearlo
             if (receivedPhoneNumberId && receivedPhoneNumberId !== this.phoneNumberId) {
                 logInfo('Phone number ID mismatch in markAsRead', {
                     configured: this.phoneNumberId,
@@ -261,7 +258,6 @@ class WhatsAppService {
                 });
             }
 
-            // Usar el ID del teléfono recibido si está disponible
             const usePhoneNumberId = receivedPhoneNumberId || this.phoneNumberId;
             const url = `${this.baseUrl}/${this.apiVersion}/${usePhoneNumberId}/messages`;
 
@@ -303,6 +299,5 @@ class WhatsAppService {
     }
 }
 
-// Exportar una única instancia
 const whatsappService = new WhatsAppService();
 module.exports = whatsappService;
