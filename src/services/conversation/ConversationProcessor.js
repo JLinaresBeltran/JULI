@@ -3,6 +3,7 @@ const { logError, logInfo } = require('../../utils/logger');
 const queryClassifierService = require('../queryClassifierService');
 const chatbaseClient = require('../../integrations/chatbaseClient');
 const whatsappService = require('../whatsappService');
+const googleTTSService = require('../../integrations/googleTTS');
 
 class ConversationProcessor {
     static getContextMessageByCategory(category) {
@@ -161,13 +162,6 @@ class ConversationProcessor {
     
             this._storeClassification(conversation, message.id, classification);
     
-            logInfo('Mensaje clasificado exitosamente', {
-                messageId: message.id,
-                category: classification.category,
-                confidence: classification.confidence,
-                conversationId: conversation.id
-            });
-    
             if (classification.category !== 'unknown') {
                 try {
                     const isFirstInteraction = !conversation.metadata.chatbaseInitialized;
@@ -188,33 +182,32 @@ class ConversationProcessor {
                     if (chatbaseResponse && chatbaseResponse.content) {
                         const responseContent = chatbaseResponse.content;
 
-                        // Verificar si la respuesta contiene la frase clave
                         if (responseContent.includes("Esto es correcto o falta algo")) {
                             try {
                                 logInfo('Detectada frase clave para TTS - Iniciando conversión', {
                                     textLength: responseContent.length
                                 });
-                                
-                                const audioBuffer = await synthesizeSpeech(responseContent);
-                                
+
+                                const audioBuffer = await googleTTSService.synthesizeSpeech(responseContent);
+
                                 await whatsappService.sendVoiceMessage(
                                     message.from,
                                     audioBuffer,
                                     message.metadata?.phoneNumberId
                                 );
 
-                                logInfo('Audio enviado exitosamente', {
+                                logInfo('Mensaje de voz enviado exitosamente', {
                                     messageId: message.id,
                                     category: classification.category,
                                     audioSize: audioBuffer.length
                                 });
+
                             } catch (ttsError) {
                                 logError('Error en conversión a voz', {
                                     error: ttsError.message,
                                     messageId: message.id
                                 });
                                 
-                                // Si falla el audio, enviar como texto
                                 await whatsappService.sendTextMessage(
                                     message.from,
                                     responseContent,
@@ -222,7 +215,6 @@ class ConversationProcessor {
                                 );
                             }
                         } else {
-                            // Enviar respuesta normal como texto
                             await whatsappService.sendTextMessage(
                                 message.from,
                                 responseContent,
@@ -250,9 +242,9 @@ class ConversationProcessor {
                     } else {
                         throw new Error('Respuesta de Chatbase inválida o vacía');
                     }
-                } catch (chatError) {
+                } catch (error) {
                     logError('Error en la comunicación con Chatbase', {
-                        error: chatError.message,
+                        error: error.message,
                         category: classification.category,
                         messageId: message.id
                     });
@@ -269,7 +261,7 @@ class ConversationProcessor {
                         category: classification.category,
                         timestamp: new Date(),
                         success: false,
-                        error: chatError.message
+                        error: error.message
                     });
                 }
             }
