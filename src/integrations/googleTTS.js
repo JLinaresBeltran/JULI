@@ -6,7 +6,9 @@ const { googleConfig } = require('../config/google');
 
 const synthesizeSpeech = async (text) => {
     try {
-        logInfo('Iniciando síntesis de texto a voz', { textLength: text.length });
+        logInfo('Iniciando síntesis de texto a voz', { 
+            textLength: text.length 
+        });
 
         const request = {
             input: { text },
@@ -38,14 +40,14 @@ const synthesizeSpeech = async (text) => {
         }
 
         const audioBuffer = Buffer.from(response.data.audioContent, 'base64');
-        const whatsappAudio = await convertToOgg(audioBuffer);
+        const oggBuffer = await convertToOgg(audioBuffer);
 
         logInfo('Síntesis completada exitosamente', {
             inputLength: text.length,
-            outputSize: whatsappAudio.length
+            outputSize: oggBuffer.length
         });
 
-        return whatsappAudio;
+        return oggBuffer;
 
     } catch (error) {
         logError('Error en síntesis de texto a voz', {
