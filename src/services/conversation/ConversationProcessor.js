@@ -34,33 +34,28 @@ class ConversationProcessor {
                 return true;
             }
 
-            let success = false;
-            switch (message.type) {
-                case 'text':
-                    success = await this.processTextMessage(message, conversation);
-                    break;
-                case 'audio':
-                    success = await this.processAudioMessage(message, conversation);
-                    break;
-                case 'document':
-                    success = await this.processDocumentMessage(message, conversation);
-                    break;
-                default:
-                    throw new Error(`Tipo de mensaje no soportado: ${message.type}`);
+            if (message.type === 'text') {
+                await this.processTextMessage(message, conversation);
+            } else if (message.type === 'audio') {
+                await this.processAudioMessage(message, conversation);
+            } else if (message.type === 'document') {
+                await this.processDocumentMessage(message, conversation);
+            } else {
+                throw new Error(`Tipo de mensaje no soportado: ${message.type}`);
             }
+            
+            message.processed = true;
+            message.error = null;
 
-            if (success) {
-                message.processed = true;
-                message.error = null;
-                this._addToProcessingHistory(conversation, {
-                    messageId: message.id,
-                    type: message.type,
-                    timestamp: new Date(),
-                    success: true
-                });
-            }
+            this._addToProcessingHistory(conversation, {
+                messageId: message.id,
+                type: message.type,
+                timestamp: new Date(),
+                success: true
+            });
+            
+            return true;
 
-            return success;
         } catch (error) {
             this._handleProcessingError(message, conversation, error);
             return false;
@@ -69,84 +64,91 @@ class ConversationProcessor {
 
     static async processTextMessage(message, conversation) {
         try {
-            const content = typeof message.text === 'object' ? message.text.body : message.text;
-            
+            const content = typeof message.text === 'object' ? 
+                message.text.body : message.text;
+    
             logInfo('Procesando mensaje de texto', {
                 messageId: message.id,
-                contentLength: content?.length
+                contentLength: content?.length,
+                conversationId: conversation.id
             });
-
+    
             if (this._isFirstMessage(conversation)) {
                 logInfo('Procesando primer mensaje - Solo bienvenida', { content });
-                return true;
+                return;
             }
-
-            const classification = await this._getClassification(conversation, content);
-            if (!classification) return false;
-
+    
+            let classification;
+            if (conversation.currentCategory && conversation.currentCategory !== 'unknown') {
+                classification = {
+                    category: conversation.currentCategory,
+                    confidence: 1.0
+                };
+                logInfo('Usando categoría existente', { category: classification.category });
+            } else {
+                logInfo('Procesando mensaje subsiguiente - Activando clasificación');
+                classification = await queryClassifierService.classifyQuery(content);
+            }
+    
             this._storeClassification(conversation, message.id, classification);
-
-            if (classification.category === 'unknown') return true;
-
-            try {
-                const chatbaseResponse = await this._getChatbaseResponse(content, classification, conversation);
-                if (!chatbaseResponse?.content) throw new Error('Respuesta de Chatbase inválida');
-
-                await this._handleChatbaseResponse(message, chatbaseResponse, classification, conversation);
-                return true;
-            } catch (error) {
-                await this._handleChatError(message, error, conversation);
-                return false;
-            }
-        } catch (error) {
-            logError('Error en procesamiento de texto', { error: error.message });
-            throw error;
-        }
-    }
-
-    static async processAudioMessage(message, conversation) {
-        try {
-            if (!message?.audio?.id) throw new Error('Audio ID no encontrado');
-
-            await whatsappService.sendTextMessage(
-                message.from,
-                "🎧 Procesando tu mensaje de voz...",
-                message.metadata?.phoneNumberId
-            );
-
-            const audioBuffer = await whatsappService.downloadMedia(message.audio.id);
-            if (!audioBuffer?.length) throw new Error('Error al descargar el audio');
-
-            const transcription = await googleSTTService.transcribeAudio(
-                audioBuffer,
-                message.audio.mime_type || 'audio/ogg'
-            );
-
-            this._storeAudioTranscription(conversation, message.id, transcription);
-
-            await whatsappService.sendTextMessage(
-                message.from,
-                `📝 Tu mensaje dice:\n\n${transcription}`,
-                message.metadata?.phoneNumberId
-            );
-
-            const classification = await queryClassifierService.classifyQuery(transcription);
-            
+    
             if (classification.category !== 'unknown') {
-                const chatbaseResponse = await chatbaseClient.getResponse(
-                    transcription,
-                    classification.category
-                );
-
-                if (chatbaseResponse?.content) {
-                    await this._handleChatbaseResponse(message, chatbaseResponse, classification, conversation);
+                try {
+                    const isFirstInteraction = !conversation.metadata.chatbaseInitialized;
+                    
+                    if (isFirstInteraction) {
+                        conversation.metadata.chatbaseInitialized = true;
+                        logInfo('Iniciando nueva conversación con Chatbase', {
+                            category: classification.category
+                        });
+                    }
+    
+                    const chatbaseResponse = await chatbaseClient.getResponse(
+                        content,
+                        classification.category,
+                        isFirstInteraction
+                    );
+    
+                    if (chatbaseResponse && chatbaseResponse.content) {
+                        await this._handleChatbaseResponse(
+                            message, 
+                            chatbaseResponse, 
+                            classification,
+                            conversation
+                        );
+                    } else {
+                        throw new Error('Respuesta de Chatbase inválida o vacía');
+                    }
+                } catch (error) {
+                    logError('Error en la comunicación con Chatbase', {
+                        error: error.message,
+                        category: classification.category,
+                        messageId: message.id
+                    });
+    
+                    await whatsappService.sendTextMessage(
+                        message.from,
+                        "Lo siento, estoy teniendo problemas para procesar tu consulta. Por favor, intenta nuevamente en unos momentos.",
+                        message.metadata?.phoneNumberId
+                    );
+    
+                    this._addToProcessingHistory(conversation, {
+                        messageId: message.id,
+                        type: 'chatbase_error',
+                        category: classification.category,
+                        timestamp: new Date(),
+                        success: false,
+                        error: error.message
+                    });
                 }
             }
-
-            return true;
+    
         } catch (error) {
-            logError('Error en audio', { error: error.message });
-            await this._handleAudioError(message, error);
+            logError('Error en procesamiento de mensaje de texto', {
+                messageId: message.id,
+                error: error.message,
+                conversationId: conversation.id
+            });
             throw error;
         }
     }
@@ -159,38 +161,136 @@ class ConversationProcessor {
             if (shouldUseTTS) {
                 logInfo('Iniciando TTS', { textLength: content.length });
 
-                const audioBuffer = await googleTTSService.synthesizeSpeech(content);
-                await whatsappService.sendVoiceMessage(
-                    message.from,
-                    audioBuffer,
-                    message.metadata?.phoneNumberId
-                );
-
-                conversation.metadata.lastTTSTime = new Date();
+                try {
+                    const audioBuffer = await googleTTSService.synthesizeSpeech(content);
+                    await whatsappService.sendVoiceMessage(
+                        message.from,
+                        audioBuffer,
+                        message.metadata?.phoneNumberId
+                    );
+                    conversation.metadata.lastTTSTime = new Date();
+                    
+                    this._addToProcessingHistory(conversation, {
+                        messageId: message.id,
+                        type: 'voice_response',
+                        category: classification.category,
+                        timestamp: new Date(),
+                        success: true
+                    });
+                } catch (ttsError) {
+                    logError('Error en envío de audio', {
+                        error: ttsError.message,
+                        messageId: message.id
+                    });
+                    // Fallback a texto sin lanzar error
+                    await whatsappService.sendTextMessage(
+                        message.from,
+                        content,
+                        message.metadata?.phoneNumberId
+                    );
+                    
+                    this._addToProcessingHistory(conversation, {
+                        messageId: message.id,
+                        type: 'text_response',
+                        category: classification.category,
+                        timestamp: new Date(),
+                        success: true,
+                        fallback: true
+                    });
+                }
             } else {
                 await whatsappService.sendTextMessage(
                     message.from,
                     content,
                     message.metadata?.phoneNumberId
                 );
+                
+                this._addToProcessingHistory(conversation, {
+                    messageId: message.id,
+                    type: 'text_response',
+                    category: classification.category,
+                    timestamp: new Date(),
+                    success: true
+                });
             }
-
-            this._addToProcessingHistory(conversation, {
-                messageId: message.id,
-                type: shouldUseTTS ? 'voice_response' : 'text_response',
-                category: classification.category,
-                timestamp: new Date(),
-                success: true
-            });
         } catch (error) {
-            if (shouldUseTTS) {
-                logError('Error TTS - fallback a texto', { error: error.message });
-                await whatsappService.sendTextMessage(
-                    message.from,
-                    content,
-                    message.metadata?.phoneNumberId
-                );
+            logError('Error fatal en manejo de respuesta', {
+                error: error.message,
+                messageId: message.id
+            });
+            throw error;
+        }
+    }
+
+    static async processAudioMessage(message, conversation) {
+        try {
+            logInfo('Iniciando procesamiento de audio', {
+                messageId: message.id,
+                audioId: message?.audio?.id
+            });
+    
+            if (!message?.audio?.id) {
+                throw new Error('Audio ID no encontrado');
             }
+    
+            await whatsappService.sendTextMessage(
+                message.from,
+                "🎧 Procesando tu mensaje de voz...",
+                message.metadata?.phoneNumberId
+            );
+    
+            const audioBuffer = await whatsappService.downloadMedia(message.audio.id);
+            
+            if (!audioBuffer || audioBuffer.length === 0) {
+                throw new Error('Error al descargar el audio');
+            }
+    
+            const transcription = await googleSTTService.transcribeAudio(
+                audioBuffer,
+                message.audio.mime_type || 'audio/ogg'
+            );
+    
+            this._storeAudioTranscription(conversation, message.id, transcription);
+    
+            await whatsappService.sendTextMessage(
+                message.from,
+                `📝 Tu mensaje dice:\n\n${transcription}`,
+                message.metadata?.phoneNumberId
+            );
+    
+            const classification = await queryClassifierService.classifyQuery(transcription);
+            
+            if (classification.category !== 'unknown') {
+                const chatbaseResponse = await chatbaseClient.getResponse(
+                    transcription,
+                    classification.category
+                );
+    
+                if (chatbaseResponse?.content) {
+                    await this._handleChatbaseResponse(
+                        message,
+                        chatbaseResponse,
+                        classification,
+                        conversation
+                    );
+                }
+            }
+    
+            return true;
+    
+        } catch (error) {
+            logError('Error procesando mensaje de audio', {
+                error: error.message,
+                messageId: message.id
+            });
+    
+            await whatsappService.sendTextMessage(
+                message.from,
+                "Lo siento, no pude procesar tu mensaje de voz correctamente. " +
+                "¿Podrías intentar enviarlo de nuevo o escribir tu mensaje?",
+                message.metadata?.phoneNumberId
+            );
+    
             throw error;
         }
     }
@@ -202,29 +302,6 @@ class ConversationProcessor {
         const minTimeBetweenTTS = 30000; // 30 segundos
 
         return hasKeyPhrase && (!lastTTS || (now - new Date(lastTTS)) > minTimeBetweenTTS);
-    }
-
-    static async _getChatbaseResponse(content, classification, conversation) {
-        const isFirstInteraction = !conversation.metadata.chatbaseInitialized;
-        if (isFirstInteraction) {
-            conversation.metadata.chatbaseInitialized = true;
-        }
-
-        return await chatbaseClient.getResponse(
-            content,
-            classification.category,
-            isFirstInteraction
-        );
-    }
-
-    static async _getClassification(conversation, content) {
-        if (conversation.currentCategory && conversation.currentCategory !== 'unknown') {
-            return {
-                category: conversation.currentCategory,
-                confidence: 1.0
-            };
-        }
-        return await queryClassifierService.classifyQuery(content);
     }
 
     static _storeAudioTranscription(conversation, messageId, transcription) {
@@ -239,33 +316,24 @@ class ConversationProcessor {
         });
     }
 
-    static async _handleChatError(message, error, conversation) {
-        logError('Error de chat', { error: error.message });
-        
-        await whatsappService.sendTextMessage(
-            message.from,
-            "Lo siento, estoy teniendo problemas para procesar tu consulta. Por favor, intenta nuevamente en unos momentos.",
-            message.metadata?.phoneNumberId
-        );
-
-        this._addToProcessingHistory(conversation, {
-            messageId: message.id,
-            type: 'chat_error',
-            timestamp: new Date(),
-            success: false,
-            error: error.message
-        });
+    static async processDocumentMessage(message, conversation) {
+        try {
+            logInfo('Procesando documento', {
+                messageId: message.id,
+                documentId: message.document?.id,
+                conversationId: conversation.id
+            });
+            return true;
+        } catch (error) {
+            logError('Error en procesamiento de documento', {
+                messageId: message.id,
+                error: error.message,
+                conversationId: conversation.id
+            });
+            throw error;
+        }
     }
 
-    static async _handleAudioError(message, error) {
-        await whatsappService.sendTextMessage(
-            message.from,
-            "Lo siento, no pude procesar tu mensaje de voz correctamente. ¿Podrías intentar enviarlo de nuevo o escribir tu mensaje?",
-            message.metadata?.phoneNumberId
-        );
-    }
-
-    // ... mantener los métodos auxiliares existentes (_isDeleteEvent, _handleChatReset, etc.) ...
     static _isDeleteEvent(message) {
         return (
             (message.type === 'system' && message.system?.body?.includes('eliminado')) ||
@@ -310,19 +378,6 @@ class ConversationProcessor {
         }
     }
 
-    static async processDocumentMessage(message, conversation) {
-        try {
-            logInfo('Procesando documento', {
-                messageId: message.id,
-                documentId: message.document?.id,
-            });
-            return true;
-        } catch (error) {
-            logError('Error en documento', { error: error.message });
-            throw error;
-        }
-    }
-
     static _storeClassification(conversation, messageId, classification) {
         if (!conversation.metadata.classifications) {
             conversation.metadata.classifications = [];
@@ -363,7 +418,8 @@ class ConversationProcessor {
         logError('Error procesando mensaje', {
             messageId: message.id,
             type: message.type,
-            error: error.message
+            error: error.message,
+            conversationId: conversation.id
         });
     }
 
