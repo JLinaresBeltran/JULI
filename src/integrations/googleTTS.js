@@ -11,8 +11,8 @@ const synthesizeSpeech = async (text) => {
         const request = {
             input: { text },
             voice: {
-                languageCode: 'es-ES',
-                name: 'es-ES-Standard-A',
+                languageCode: 'es-US',
+                name: 'es-US-Journey-F',
                 ssmlGender: 'FEMALE'
             },
             audioConfig: {
