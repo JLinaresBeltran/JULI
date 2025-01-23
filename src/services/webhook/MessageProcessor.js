@@ -6,159 +6,121 @@ const chatbaseController = require('../controllers/chatbaseController');
 const documentTriggerPhrase = "juli quiero el documento";
 
 class MessageProcessor {
-   constructor(conversationService, whatsappService, wsManager, legalAgentSystem, documentService) {
-       this.conversationService = conversationService;
-       this.whatsappService = whatsappService;
-       this.wsManager = wsManager;
-       this.legalAgentSystem = legalAgentSystem;
-       this.documentService = documentService;
-   }
+    constructor(conversationService, whatsappService, wsManager, legalAgentSystem, documentService) {
+        this.conversationService = conversationService;
+        this.whatsappService = whatsappService; 
+        this.wsManager = wsManager;
+        this.legalAgentSystem = legalAgentSystem;
+        this.documentService = documentService;
+    }
 
-   async processMessage(message, context) {
-       try {
-           logInfo('Processing message', {
-               messageId: message.id,
-               type: message.type,
-               from: message.from
-           });
+    async processMessage(message, context) {
+        try {
+            logInfo('Processing message', {
+                messageId: message.id,
+                type: message.type,
+                from: message.from
+            });
+ 
+            const conversation = await this.conversationService.getConversation(message.from);
+            
+            // Interceptar solicitud de documento
+            if (message.type === 'text' && message.text.body.toLowerCase() === 'juli quiero el documento') {
+                if (conversation?.category) {
+                    await this._handleDocumentRequest(conversation, context);
+                    return;
+                }
+            }
+ 
+            // Flujo normal
+            const isFirstInteraction = !conversation;
+            if (isFirstInteraction) {
+                await this._handleFirstInteraction(message, context);
+                return {
+                    success: true,
+                    isFirstInteraction: true
+                };
+            }
+ 
+            const formattedMessage = this.formatMessage(message, context);
+            const updatedConversation = await this.conversationService.processIncomingMessage(
+                formattedMessage,
+                { createIfNotExists: true }
+            );
+ 
+            if (updatedConversation.category && message.type === 'text') {
+                await this._forwardToChatbase(message.text.body, updatedConversation.category);
+            }
+ 
+            if (message.type === 'text') {
+                await this.whatsappService.markAsRead(message.id);
+            }
+ 
+            if (this.wsManager) {
+                this.wsManager.broadcastConversationUpdate(updatedConversation);
+            }
+ 
+            return {
+                success: true,
+                isFirstInteraction: false,
+                conversation: updatedConversation
+            };
+ 
+        } catch (error) {
+            logError('Failed to process message', {
+                error: error.message,
+                messageId: message.id,
+                stack: error.stack
+            });
+            throw error;
+        }
+    }
 
-           // 1. Obtener la conversación
-           const conversation = await this.conversationService.getConversation(message.from);
-           const isFirstInteraction = !conversation;
-           
-           // 2. Si es primera interacción, enviar mensaje de bienvenida
-           if (isFirstInteraction) {
-               await this._handleFirstInteraction(message, context);
-               return {
-                   success: true,
-                   isFirstInteraction: true
-               };
-           }
-
-           // 3. Si es la primera respuesta después del mensaje de bienvenida
-           if (conversation && !conversation.category && message.type === 'text') {
-               await this._handleCategoryClassification(message, conversation);
-           }
-
-           // 4. Verificar si es solicitud de documento
-           if (message.type === 'text' && 
-               message.text.body.toLowerCase().includes(documentTriggerPhrase)) {
-               await this._handleDocumentRequest(conversation, context);
-               return {
-                   success: true,
-                   isDocumentRequest: true
-               };
-           }
-
-           // 5. Procesar el mensaje normalmente
-           const formattedMessage = this.formatMessage(message, context);
-           const updatedConversation = await this.conversationService.processIncomingMessage(
-               formattedMessage,
-               { createIfNotExists: true }
-           );
-
-           // 6. Procesar el mensaje con Chatbase si ya está clasificado
-           if (updatedConversation.category && message.type === 'text') {
-               await this._forwardToChatbase(message.text.body, updatedConversation.category);
-           }
-
-           // 7. Marcar como leído si es mensaje de texto
-           if (message.type === 'text') {
-               await this.whatsappService.markAsRead(message.id);
-           }
-
-           // 8. Notificar por WebSocket
-           if (this.wsManager) {
-               this.wsManager.broadcastConversationUpdate(updatedConversation);
-           }
-
-           return {
-               success: true,
-               isFirstInteraction: false,
-               conversation: updatedConversation
-           };
-
-       } catch (error) {
-           logError('Failed to process message', {
-               error: error.message,
-               messageId: message.id,
-               stack: error.stack
-           });
-           throw error;
-       }
-   }
-
-   async _handleDocumentRequest(conversation, context) {
-       try {
-           if (!conversation.category) {
-               await this.whatsappService.sendTextMessage(
-                   conversation.whatsappId,
-                   "Necesito clasificar primero tu caso. Por favor, cuéntame brevemente tu situación."
-               );
-               return;
-           }
-
-           const validCategories = ['servicios_publicos', 'telecomunicaciones', 'transporte_aereo'];
-           if (!validCategories.includes(conversation.category)) {
-               logError('Invalid category detected', {
-                   category: conversation.category,
-                   whatsappId: conversation.whatsappId
-               });
-               await this.whatsappService.sendTextMessage(
-                   conversation.whatsappId,
-                   "Lo siento, no puedo generar un documento para esta categoría."
-               );
-               return;
-           }
-
-           const customerData = {
-               name: context.contacts?.[0]?.profile?.name || 'Usuario',
-               documentNumber: conversation.metadata?.documentNumber,
-               email: conversation.metadata?.email,
-               phone: conversation.from,
-               address: conversation.metadata?.address
-           };
-
-           logInfo('Processing document request', {
-               category: conversation.category,
-               whatsappId: conversation.whatsappId
-           });
-
-           const result = await this.legalAgentSystem.processComplaint(
-               conversation.category,
-               conversation,
-               customerData
-           );
-
-           const doc = await this.documentService.generateDocument(
-               conversation.category,
-               result,
-               customerData
-           );
-
-           await this.whatsappService.sendTextMessage(
-               conversation.whatsappId,
-               "Tu documento ha sido generado y será enviado a tu correo electrónico. Por favor verifica tu bandeja de entrada."
-           );
-
-           logInfo('Document generated successfully', {
-               whatsappId: conversation.whatsappId,
-               category: conversation.category
-           });
-
-       } catch (error) {
-           logError('Error generating document', {
-               error: error.message,
-               whatsappId: conversation.whatsappId,
-               stack: error.stack
-           });
-
-           await this.whatsappService.sendTextMessage(
-               conversation.whatsappId,
-               "Lo siento, hubo un problema generando tu documento. Por favor intenta nuevamente más tarde."
-           );
-       }
-   }
+    async _handleDocumentRequest(conversation, context) {
+        try {
+            const customerData = {
+                name: context.contacts?.[0]?.profile?.name,
+                documentNumber: conversation.metadata?.documentNumber,
+                email: conversation.metadata?.email,
+                phone: conversation.from,
+                address: conversation.metadata?.address
+            };
+ 
+            await this.whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "Estoy preparando tu documento. En unos momentos lo recibirás."
+            );
+ 
+            const result = await this.legalAgentSystem.processComplaint(
+                conversation.category,
+                conversation.getMessages(),
+                customerData
+            );
+ 
+            await this.documentService.generateDocument(
+                conversation.category,
+                result, 
+                customerData
+            );
+ 
+            await this.whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "Tu documento ha sido generado y enviado a tu correo electrónico."
+            );
+ 
+        } catch (error) {
+            logError('Error generating document', {
+                error: error.message,
+                whatsappId: conversation.whatsappId,
+                stack: error.stack
+            });
+            
+            await this.whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "Lo siento, hubo un problema generando el documento. Por favor intenta nuevamente."
+            );
+        }
+    }
 
    async _handleFirstInteraction(message, context) {
        logInfo('First interaction detected, sending welcome message', {
