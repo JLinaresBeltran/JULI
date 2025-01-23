@@ -15,39 +15,67 @@ class MessageProcessor {
    }
 
    async processMessage(message, context) {
-       try {
-           logInfo('Processing message', {
-               messageId: message.id,
-               type: message.type,
-               from: message.from
-           });
+    try {
+        logInfo('Processing message', {
+            messageId: message.id,
+            type: message.type,
+            from: message.from
+        });
+ 
+        const conversation = await this.conversationService.getConversation(message.from);
+        
+        if (this._isDocumentRequest(message)) {
+            if (conversation?.category) {
+                const customerData = {
+                    name: context.contacts?.[0]?.profile?.name,
+                    documentNumber: conversation.metadata?.documentNumber,
+                    email: conversation.metadata?.email,
+                    phone: conversation.from,
+                    address: conversation.metadata?.address
+                };
+ 
+                await this.whatsappService.sendTextMessage(
+                    conversation.whatsappId,
+                    "Estoy procesando tu solicitud para generar el documento."
+                );
+ 
+                const result = await this.legalAgentSystem.processComplaint(
+                    conversation.category,
+                    conversation.getMessages(),
+                    customerData
+                );
+ 
+                await this.documentService.generateDocument(
+                    conversation.category,
+                    result,
+                    customerData
+                );
+ 
+                await this.whatsappService.sendTextMessage(
+                    conversation.whatsappId,
+                    "Tu documento ha sido generado y enviado a tu correo electrónico."
+                );
+ 
+                return {
+                    success: true,
+                    documentGenerated: true
+                };
+            }
+        }
+ 
+        // Continuar con el flujo normal si no es solicitud de documento
+        return this._processNormalMessage(message, context, conversation);
+ 
+    } catch (error) {
+        logError('Failed to process message', { error });
+        throw error;
+    }
+ }
 
-           const conversation = await this.conversationService.getConversation(message.from);
-           
-           if (this._isDocumentRequest(message) && conversation?.category) {
-               return this._handleDocumentRequest(conversation, context);
-           }
-
-           if (!conversation) {
-               return this._handleFirstInteraction(message, context);
-           }
-
-           return this._processNormalMessage(message, context, conversation);
-
-       } catch (error) {
-           logError('Failed to process message', {
-               error: error.message,
-               messageId: message.id,
-               stack: error.stack
-           });
-           throw error;
-       }
-   }
-
-   _isDocumentRequest(message) {
-       return message.type === 'text' && 
-              message.text.body.toLowerCase() === DOCUMENT_TRIGGER;
-   }
+ _isDocumentRequest(message) {
+    return message.type === 'text' && 
+           message.text.body.toLowerCase() === 'juli quiero el documento';
+ }
 
    async _processNormalMessage(message, context, conversation) {
        const formattedMessage = this.formatMessage(message, context);
