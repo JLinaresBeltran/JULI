@@ -21,64 +21,55 @@ class MessageProcessor {
                 type: message.type,
                 from: message.from
             });
-
+    
+            // Obtener o crear conversación
             const conversation = await this.conversationService.getConversation(message.from);
             
-            // Si es la primera interacción, manejar el saludo inicial
-            if (!conversation) {
-                return this._handleFirstInteraction(message, context);
-            }
-
-            // Verificar si es una solicitud de documento
+            // Verificar si es solicitud de documento antes de cualquier otro procesamiento
             if (this._isDocumentRequest(message)) {
-                if (!conversation.category) {
+                logInfo('Document request detected', { 
+                    whatsappId: message.from,
+                    category: conversation?.category 
+                });
+    
+                if (!conversation?.category) {
                     await this.whatsappService.sendTextMessage(
                         message.from,
                         "Para generar el documento, primero necesito entender tu caso. Por favor, cuéntame tu situación."
                     );
-                    return {
-                        success: true,
-                        documentRequested: true,
-                        noCategoryFound: true
-                    };
+                    return { success: true, documentRequested: true, noCategoryFound: true };
                 }
+    
                 return this._handleDocumentRequest(conversation, context);
             }
-
-            // Formatear y procesar el mensaje normal
+    
             const formattedMessage = this.formatMessage(message, context);
-            
-            // Actualizar la conversación con el nuevo mensaje
             const updatedConversation = await this.conversationService.processIncomingMessage(
                 formattedMessage,
                 { createIfNotExists: true }
             );
-
-            // Si el mensaje es de texto y tenemos categoría, enviar a Chatbase
+    
+            // Procesar mensaje normal
+            if (updatedConversation.category && message.type === 'text') {
+                await this._forwardToChatbase(message.text.body, updatedConversation.category);
+            }
+    
             if (message.type === 'text') {
-                if (updatedConversation.category) {
-                    await this._forwardToChatbase(message.text.body, updatedConversation.category);
-                }
                 await this.whatsappService.markAsRead(message.id);
             }
-
-            // Notificar actualización vía WebSocket
+    
             if (this.wsManager) {
                 this.wsManager.broadcastConversationUpdate(updatedConversation);
             }
-
+    
             return {
                 success: true,
                 isFirstInteraction: false,
                 conversation: updatedConversation
             };
-
+    
         } catch (error) {
-            logError('Failed to process message', { 
-                error: error.message,
-                stack: error.stack,
-                messageId: message.id
-            });
+            logError('Failed to process message', { error });
             throw error;
         }
     }
