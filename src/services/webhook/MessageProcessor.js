@@ -23,76 +23,65 @@ class MessageProcessor {
             });
 
             const conversation = await this.conversationService.getConversation(message.from);
-            
-            // Primera interacción
+
+            // Handle first interaction
             if (!conversation) {
                 return this._handleFirstInteraction(message, context);
             }
 
-            // Validar trigger de documento primero
-            const isDocumentRequest = message.type === 'text' && message.text?.body?.toLowerCase().trim() === DOCUMENT_TRIGGER;
-            if (isDocumentRequest) {
-                logInfo('Document request detected', {
-                    whatsappId: conversation.whatsappId,
-                    category: conversation.category
+            // Document trigger validation before any other processing
+            if (message?.type === 'text' && message.text?.body?.toLowerCase().trim() === DOCUMENT_TRIGGER) {
+                logInfo('Document trigger detected', {
+                    whatsappId: message.from,
+                    category: conversation?.category
                 });
+
+                // Skip normal message processing and handle document request
                 return this._handleDocumentRequest(conversation, context);
             }
 
-            // Flujo normal de mensaje
-            return this._processNormalMessage(message, context, conversation);
+            // Handle normal message flow
+            const formattedMessage = this.formatMessage(message, context);
+            const updatedConversation = await this.conversationService.processIncomingMessage(
+                formattedMessage,
+                { createIfNotExists: true }
+            );
+
+            if (message.type === 'text') {
+                if (updatedConversation.category) {
+                    await this._forwardToChatbase(message.text.body, updatedConversation.category);
+                }
+                await this.whatsappService.markAsRead(message.id);
+            }
+
+            if (this.wsManager) {
+                this.wsManager.broadcastConversationUpdate(updatedConversation);
+            }
+
+            return {
+                success: true,
+                isFirstInteraction: false,
+                conversation: updatedConversation
+            };
+
         } catch (error) {
             logError('Failed to process message', { error });
             throw error;
         }
     }
 
-
-    async _processDocumentRequest(conversation, context) {
-        if (!conversation?.category) {
-            await this.whatsappService.sendTextMessage(
-                conversation.whatsappId,
-                "Para generar el documento, primero necesito entender tu caso. Por favor, cuéntame tu situación."
-            );
-            return { success: false, reason: 'no_category' };
-        }
-
-        return this._handleDocumentRequest(conversation, context);
-    }
-
-    _isDocumentRequest(message) {
-        if (!message?.type === 'text' || !message?.text?.body) return false;
-        return message.text.body.toLowerCase().trim() === DOCUMENT_TRIGGER;
-    }
-
-    async _processNormalMessage(message, context, conversation) {
-        const formattedMessage = this.formatMessage(message, context);
-        
-        const updatedConversation = await this.conversationService.processIncomingMessage(
-            formattedMessage,
-            { createIfNotExists: true }
-        );
-
-        if (message.type === 'text') {
-            if (updatedConversation.category) {
-                await this._forwardToChatbase(message.text.body, updatedConversation.category);
-            }
-            await this.whatsappService.markAsRead(message.id);
-        }
-
-        if (this.wsManager) {
-            this.wsManager.broadcastConversationUpdate(updatedConversation);
-        }
-
-        return {
-            success: true,
-            isFirstInteraction: false,
-            conversation: updatedConversation
-        };
-    }
-
+    // Rest of the code remains unchanged
+    
     async _handleDocumentRequest(conversation, context) {
         try {
+            if (!conversation?.category) {
+                await this.whatsappService.sendTextMessage(
+                    conversation.whatsappId,
+                    "Para generar el documento, primero necesito entender tu caso. Por favor, cuéntame tu situación."
+                );
+                return { success: false, reason: 'no_category' };
+            }
+
             logInfo('Processing document request', {
                 whatsappId: conversation.whatsappId,
                 category: conversation.category
@@ -164,6 +153,7 @@ class MessageProcessor {
         }
     }
 
+    // Rest of the methods remain unchanged
     _validateCustomerData(customerData) {
         const requiredFields = ['name', 'documentNumber', 'email', 'address'];
         return requiredFields.filter(field => !customerData[field]);
