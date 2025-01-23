@@ -21,62 +21,108 @@ class MessageProcessor {
                 type: message.type,
                 from: message.from
             });
-    
-            // Obtener o crear conversación
+
             const conversation = await this.conversationService.getConversation(message.from);
             
-            // Verificar si es solicitud de documento antes de cualquier otro procesamiento
-            if (this._isDocumentRequest(message)) {
-                logInfo('Document request detected', { 
-                    whatsappId: message.from,
-                    category: conversation?.category 
-                });
-    
+            // Detectar trigger de documento antes de cualquier procesamiento
+            if (message?.type === 'text' && message.text?.body?.toLowerCase().trim() === DOCUMENT_TRIGGER) {
                 if (!conversation?.category) {
                     await this.whatsappService.sendTextMessage(
                         message.from,
                         "Para generar el documento, primero necesito entender tu caso. Por favor, cuéntame tu situación."
                     );
-                    return { success: true, documentRequested: true, noCategoryFound: true };
+                    return { success: false, reason: 'no_category' };
                 }
-    
+
+                // Activar generación de documento directamente
+                const customerData = {
+                    name: context.contacts?.[0]?.profile?.name,
+                    documentNumber: conversation.metadata?.documentNumber,
+                    email: conversation.metadata?.email,
+                    phone: conversation.from,
+                    address: conversation.metadata?.address
+                };
+
+                // Generar documento
                 return this._handleDocumentRequest(conversation, context);
             }
-    
+
+            // Procesar como mensaje normal si no es trigger de documento
+            if (!conversation) {
+                return this._handleFirstInteraction(message, context);
+            }
+
             const formattedMessage = this.formatMessage(message, context);
             const updatedConversation = await this.conversationService.processIncomingMessage(
                 formattedMessage,
                 { createIfNotExists: true }
             );
-    
-            // Procesar mensaje normal
+
             if (updatedConversation.category && message.type === 'text') {
                 await this._forwardToChatbase(message.text.body, updatedConversation.category);
             }
-    
+
             if (message.type === 'text') {
                 await this.whatsappService.markAsRead(message.id);
             }
-    
+
             if (this.wsManager) {
                 this.wsManager.broadcastConversationUpdate(updatedConversation);
             }
-    
+
             return {
                 success: true,
                 isFirstInteraction: false,
                 conversation: updatedConversation
             };
-    
+
         } catch (error) {
             logError('Failed to process message', { error });
             throw error;
         }
     }
 
+    async _processDocumentRequest(conversation, context) {
+        if (!conversation?.category) {
+            await this.whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "Para generar el documento, primero necesito entender tu caso. Por favor, cuéntame tu situación."
+            );
+            return { success: false, reason: 'no_category' };
+        }
+
+        return this._handleDocumentRequest(conversation, context);
+    }
+
     _isDocumentRequest(message) {
-        return message.type === 'text' && 
-               message.text.body.toLowerCase().trim() === DOCUMENT_TRIGGER;
+        if (!message?.type === 'text' || !message?.text?.body) return false;
+        return message.text.body.toLowerCase().trim() === DOCUMENT_TRIGGER;
+    }
+
+    async _processNormalMessage(message, context, conversation) {
+        const formattedMessage = this.formatMessage(message, context);
+        
+        const updatedConversation = await this.conversationService.processIncomingMessage(
+            formattedMessage,
+            { createIfNotExists: true }
+        );
+
+        if (message.type === 'text') {
+            if (updatedConversation.category) {
+                await this._forwardToChatbase(message.text.body, updatedConversation.category);
+            }
+            await this.whatsappService.markAsRead(message.id);
+        }
+
+        if (this.wsManager) {
+            this.wsManager.broadcastConversationUpdate(updatedConversation);
+        }
+
+        return {
+            success: true,
+            isFirstInteraction: false,
+            conversation: updatedConversation
+        };
     }
 
     async _handleDocumentRequest(conversation, context) {
@@ -94,7 +140,6 @@ class MessageProcessor {
                 address: conversation.metadata?.address
             };
 
-            // Validar datos requeridos
             const missingFields = this._validateCustomerData(customerData);
             if (missingFields.length > 0) {
                 const message = `Para generar el documento necesito los siguientes datos: ${missingFields.join(', ')}`;
@@ -110,14 +155,12 @@ class MessageProcessor {
                 "Estoy procesando tu solicitud para generar el documento. Esto puede tomar unos momentos."
             );
 
-            // Procesar la queja
             const result = await this.legalAgentSystem.processComplaint(
                 conversation.category,
                 conversation.getMessages(),
                 customerData
             );
 
-            // Generar y enviar el documento
             await this.documentService.generateDocument(
                 conversation.category,
                 result,
