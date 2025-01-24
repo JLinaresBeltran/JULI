@@ -56,19 +56,15 @@ class MessageProcessor {
 
     async _handleDocumentRequest(conversation, context) {
         try {
-            if (!conversation?.category) {
+            // Remover esta validación ya que la categoría ya está asignada
+            /* if (!conversation?.category) {
                 await this.whatsappService.sendTextMessage(
                     conversation.whatsappId,
-                    "Para generar el documento, primero necesito entender tu caso. Por favor, cuéntame tu situación."
+                    "Para generar el documento, primero necesito entender tu caso..."
                 );
                 return { success: false, reason: 'no_category' };
-            }
-
-            logInfo('Processing document request', {
-                whatsappId: conversation.whatsappId,
-                category: conversation.category
-            });
-
+            } */
+    
             const customerData = {
                 name: context.contacts?.[0]?.profile?.name,
                 documentNumber: conversation.metadata?.documentNumber,
