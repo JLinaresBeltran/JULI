@@ -2,7 +2,11 @@ const conversationService = require('../services/conversationService');
 const whatsappService = require('../services/whatsappService');
 const welcomeHandlerService = require('../services/welcomeHandlerService');
 const WebSocketManager = require('../services/websocketService');
+const legalAgentSystem = require('../services/legalAgents');
+const documentService = require('../services/documentService');
 const { logInfo, logError } = require('../utils/logger');
+
+const DOCUMENT_TRIGGER = "juli quiero el documento";
 
 function validateWebhookPayload(body) {
     if (!body || !body.object || !Array.isArray(body.entry)) {
@@ -104,7 +108,42 @@ const webhookController = {
                 throw new Error('Invalid webhook payload');
             }
 
-            const results = await this._processEntries(req.body.entry);
+            const results = { processed: 0, errors: 0, details: [] };
+
+            for (const entry of req.body.entry) {
+                for (const change of entry.changes) {
+                    if (this._isConversationStart(change)) {
+                        try {
+                            const userId = change.value.contacts[0].wa_id;
+                            await this._handleNewUserWelcome(userId, change.value);
+                            results.processed++;
+                            continue;
+                        } catch (error) {
+                            logError('Welcome flow error', { error: error.message });
+                            results.errors++;
+                        }
+                    }
+
+                    if (change.value?.messages) {
+                        const message = change.value.messages[0];
+                        
+                        // Check document trigger before any processing
+                        if (message.type === 'text' && 
+                            message.text.body.toLowerCase().trim() === DOCUMENT_TRIGGER) {
+                            await this._handleDocumentTrigger(message, change.value);
+                            results.processed++;
+                            continue;
+                        }
+
+                        await this._processMessages(change.value.messages, change.value, results);
+                    }
+
+                    if (change.value?.statuses) {
+                        await this._processStatuses(change.value.statuses, change.value, results);
+                    }
+                }
+            }
+
             logInfo('Webhook processed', { results });
             return res.status(200).send('EVENT_RECEIVED');
         } catch (error) {
@@ -113,34 +152,83 @@ const webhookController = {
         }
     },
 
-    async _processEntries(entries) {
-        const results = { processed: 0, errors: 0, details: [] };
-
-        for (const entry of entries) {
-            for (const change of entry.changes) {
-                if (this._isConversationStart(change)) {
-                    try {
-                        const userId = change.value.contacts[0].wa_id;
-                        await this._handleNewUserWelcome(userId, change.value);
-                        results.processed++;
-                        continue;
-                    } catch (error) {
-                        logError('Welcome flow error', { error: error.message });
-                        results.errors++;
-                    }
-                }
-
-                if (change.value?.messages) {
-                    await this._processMessages(change.value.messages, change.value, results);
-                }
-
-                if (change.value?.statuses) {
-                    await this._processStatuses(change.value.statuses, change.value, results);
-                }
+    async _handleDocumentTrigger(message, context) {
+        try {
+            const conversation = await conversationService.getConversation(message.from);
+            
+            if (!conversation?.category) {
+                await whatsappService.sendTextMessage(
+                    message.from,
+                    "Para generar el documento, primero necesito entender tu caso. Por favor, cuéntame tu situación."
+                );
+                return;
             }
-        }
 
-        return results;
+            logInfo('Processing document request', {
+                whatsappId: message.from,
+                category: conversation.category
+            });
+
+            const customerData = {
+                name: context.contacts?.[0]?.profile?.name,
+                documentNumber: conversation.metadata?.documentNumber,
+                email: conversation.metadata?.email,
+                phone: message.from,
+                address: conversation.metadata?.address
+            };
+
+            const missingFields = this._validateCustomerData(customerData);
+            if (missingFields.length > 0) {
+                const missingFieldsMessage = `Para generar el documento necesito los siguientes datos: ${missingFields.join(', ')}`;
+                await whatsappService.sendTextMessage(message.from, missingFieldsMessage);
+                return;
+            }
+
+            await whatsappService.sendTextMessage(
+                message.from,
+                "Estoy procesando tu solicitud para generar el documento. Esto puede tomar unos momentos."
+            );
+
+            const result = await legalAgentSystem.processComplaint(
+                conversation.category,
+                conversation.getMessages(),
+                customerData
+            );
+
+            await documentService.generateDocument(
+                conversation.category,
+                result,
+                customerData
+            );
+
+            await whatsappService.sendTextMessage(
+                message.from,
+                "¡Listo! Tu documento ha sido generado y enviado a tu correo electrónico."
+            );
+
+            logInfo('Document generated successfully', {
+                whatsappId: message.from,
+                category: conversation.category,
+                customerEmail: customerData.email
+            });
+
+        } catch (error) {
+            logError('Error handling document trigger', { 
+                error: error.message,
+                whatsappId: message.from,
+                stack: error.stack 
+            });
+            
+            await whatsappService.sendTextMessage(
+                message.from,
+                "Lo siento, hubo un problema generando el documento. Por favor intenta nuevamente más tarde."
+            );
+        }
+    },
+
+    _validateCustomerData(customerData) {
+        const requiredFields = ['name', 'documentNumber', 'email', 'address'];
+        return requiredFields.filter(field => !customerData[field]);
     },
 
     _isConversationStart(change) {
@@ -180,7 +268,11 @@ const webhookController = {
                     from: message.from
                 });
 
-                const conversation = conversationService.getConversation(message.from);
+                if (!validateMessage(message, context)) {
+                    throw new Error('Invalid message format');
+                }
+
+                const conversation = await conversationService.getConversation(message.from);
                 const isNewUser = !conversation;
 
                 if (isNewUser) {
@@ -189,7 +281,6 @@ const webhookController = {
 
                 const formattedMessage = formatMessage(message, context);
 
-                // Procesar audio antes de enviar a conversationService si es necesario
                 if (message.type === 'audio') {
                     logInfo('Processing audio message', {
                         messageId: message.id,
@@ -198,15 +289,13 @@ const webhookController = {
                     });
                 }
 
-                // Procesar el mensaje con el servicio de conversación
                 await conversationService.processIncomingMessage(formattedMessage, {
                     createIfNotExists: true,
                     skipClassification: isNewUser
                 });
 
-                // Marcar como leído tanto mensajes de texto como de audio
                 if (message.type === 'text' || message.type === 'audio') {
-                    await whatsappService.markAsRead(message.id, context.metadata?.phone_number_id);
+                    await whatsappService.markAsRead(message.id);
                 }
 
                 this._broadcastUpdates(conversation);
@@ -224,16 +313,6 @@ const webhookController = {
                 this._addResult(results, message, 'error', error);
             }
         }
-    },
-
-    _addResult(results, message, status, details) {
-        results[status === 'success' ? 'processed' : 'errors']++;
-        results.details.push({
-            id: message.id,
-            status,
-            type: message.type,
-            ...details
-        });
     },
 
     async _processStatuses(statuses, context, results) {
@@ -257,6 +336,16 @@ const webhookController = {
                 });
             }
         }
+    },
+
+    _addResult(results, message, status, details) {
+        results[status === 'success' ? 'processed' : 'errors']++;
+        results.details.push({
+            id: message.id,
+            status,
+            type: message.type,
+            ...details
+        });
     },
 
     _broadcastUpdates(conversation) {
