@@ -22,22 +22,21 @@ class MessageProcessor {
                 from: message.from
             });
 
+            // Verificar trigger documento primero
+            if (message?.type === 'text' && 
+                message.text?.body?.toLowerCase().trim() === DOCUMENT_TRIGGER) {
+                logInfo('Document trigger detected', {
+                    whatsappId: message.from
+                });
+                const conversation = await this.conversationService.getConversation(message.from);
+                return this._handleDocumentRequest(conversation, context);
+            }
+
             const conversation = await this.conversationService.getConversation(message.from);
 
             // Handle first interaction
             if (!conversation) {
                 return this._handleFirstInteraction(message, context);
-            }
-
-            // Document trigger validation before any other processing
-            if (message?.type === 'text' && message.text?.body?.toLowerCase().trim() === DOCUMENT_TRIGGER) {
-                logInfo('Document trigger detected', {
-                    whatsappId: message.from,
-                    category: conversation?.category
-                });
-
-                // Skip normal message processing and handle document request
-                return this._handleDocumentRequest(conversation, context);
             }
 
             // Handle normal message flow
@@ -70,8 +69,6 @@ class MessageProcessor {
         }
     }
 
-    // Rest of the code remains unchanged
-    
     async _handleDocumentRequest(conversation, context) {
         try {
             if (!conversation?.category) {
@@ -153,7 +150,6 @@ class MessageProcessor {
         }
     }
 
-    // Rest of the methods remain unchanged
     _validateCustomerData(customerData) {
         const requiredFields = ['name', 'documentNumber', 'email', 'address'];
         return requiredFields.filter(field => !customerData[field]);
