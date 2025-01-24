@@ -16,43 +16,29 @@ class MessageProcessor {
   }
 
   async processMessage(message, context) {
-      try {
-          if (!message?.type || !message.from) {
-              throw new Error('Invalid message structure');
-          }
-
-          const conversation = await this.conversationService.getConversation(message.from);
-          
-          if (!conversation) {
-              return await this._handleFirstInteraction(message, context);
-          }
-
-          if (message.type === 'text' && message.text?.body?.toLowerCase().trim() === DOCUMENT_TRIGGER) {
-              logInfo('Document trigger detected', { whatsappId: message.from });
-              await this.whatsappService.markAsRead(message.id);
-              return await this._handleDocumentRequest(conversation, context);
-          }
-
-          if (conversation?.metadata?.awaitingEmail && message.type === 'text') {
-              const email = message.text.body.trim();
-              if (this._validateEmail(email)) {
-                  await this.conversationService.updateConversationMetadata(
-                      conversation.whatsappId,
-                      { 
-                          email: email,
-                          awaitingEmail: false,
-                          documentPending: true
-                      }
-                  );
-                  return await this._processDocumentGeneration(conversation, context);
-              } else {
-                  await this.whatsappService.sendTextMessage(
-                      conversation.whatsappId,
-                      "El correo electrónico no es válido. Por favor, ingresa un correo válido."
-                  );
-                  return { success: false, reason: 'invalid_email' };
-              }
-          }
+    try {
+        const conversation = await this.conversationService.getConversation(message.from);
+        
+        // Email handling - DEBE IR ANTES del trigger de documento
+        if (conversation?.metadata?.awaitingEmail && message.type === 'text') {
+            const email = message.text.body.trim();
+            if (this._validateEmail(email)) {
+                await this.conversationService.updateConversationMetadata(
+                    conversation.whatsappId,
+                    { 
+                        email: email,
+                        awaitingEmail: false,
+                        documentPending: true
+                    }
+                );
+                return await this._processDocumentGeneration(conversation, context);
+            }
+            await this.whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "El correo electrónico no es válido. Por favor, ingresa un correo válido."
+            );
+            return { success: false, reason: 'invalid_email' };
+        }
 
           return await this._processNormalMessage(message, conversation, context);
 
