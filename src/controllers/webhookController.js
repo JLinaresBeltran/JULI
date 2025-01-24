@@ -131,8 +131,7 @@ const webhookController = {
                         if (message.type === 'text' && 
                             message.text.body.toLowerCase().trim() === DOCUMENT_TRIGGER) {
                             await this._handleDocumentTrigger(message, change.value);
-                            results.processed++;
-                            continue;
+                            return;
                         }
 
                         await this._processMessages(change.value.messages, change.value, results);
