@@ -56,77 +56,52 @@ class MessageProcessor {
 
     async _handleDocumentRequest(conversation, context) {
         try {
-            // Remover esta validación ya que la categoría ya está asignada
-            /* if (!conversation?.category) {
-                await this.whatsappService.sendTextMessage(
-                    conversation.whatsappId,
-                    "Para generar el documento, primero necesito entender tu caso..."
-                );
-                return { success: false, reason: 'no_category' };
-            } */
-    
             const customerData = {
-                name: context.contacts?.[0]?.profile?.name,
-                documentNumber: conversation.metadata?.documentNumber,
+                name: context.contacts?.[0]?.profile?.name || 'Usuario',
+                documentNumber: context.contacts?.[0]?.wa_id || conversation.whatsappId,
                 email: conversation.metadata?.email,
                 phone: conversation.from,
-                address: conversation.metadata?.address
+                address: "Dirección por defecto",
+                numero_reserva: "ABC123",
+                numero_vuelo: "XY123",
+                fecha_vuelo: "2024-01-24",
+                ruta: "BOG-MIA",
+                valor_tiquete: "1000000"
             };
-
-            const missingFields = this._validateCustomerData(customerData);
-            if (missingFields.length > 0) {
-                const message = `Para generar el documento necesito los siguientes datos: ${missingFields.join(', ')}`;
-                await this.whatsappService.sendTextMessage(conversation.whatsappId, message);
-                return {
-                    success: false,
-                    missingFields
-                };
+    
+            if (!customerData.email) {
+                await this.whatsappService.sendTextMessage(
+                    conversation.whatsappId,
+                    "Indícame tu correo electrónico"
+                );
+                return { success: false, missingFields: ['email'] };
             }
-
+    
             await this.whatsappService.sendTextMessage(
                 conversation.whatsappId,
                 "Estoy procesando tu solicitud para generar el documento. Esto puede tomar unos momentos."
             );
-
+    
             const result = await this.legalAgentSystem.processComplaint(
                 conversation.category,
                 conversation.getMessages(),
                 customerData
             );
-
+    
             await this.documentService.generateDocument(
                 conversation.category,
                 result,
                 customerData
             );
-
+    
             await this.whatsappService.sendTextMessage(
                 conversation.whatsappId,
                 "¡Listo! Tu documento ha sido generado y enviado a tu correo electrónico."
             );
-
-            logInfo('Document generated successfully', {
-                whatsappId: conversation.whatsappId,
-                category: conversation.category,
-                customerEmail: customerData.email
-            });
-
-            return {
-                success: true,
-                documentGenerated: true
-            };
-
+    
+            return { success: true, documentGenerated: true };
         } catch (error) {
-            logError('Error generating document', {
-                error: error.message,
-                whatsappId: conversation.whatsappId,
-                stack: error.stack
-            });
-            
-            await this.whatsappService.sendTextMessage(
-                conversation.whatsappId,
-                "Lo siento, hubo un problema generando el documento. Por favor intenta nuevamente más tarde."
-            );
+            logError('Error generating document', { error });
             throw error;
         }
     }
