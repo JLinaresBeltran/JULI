@@ -26,7 +26,16 @@ class MessageProcessor {
       try {
           if (conversation.shouldClassify()) {
               const classification = await this._handleCategoryClassification(message, conversation);
-              await this._forwardToChatbase(message, classification.category);
+              const chatbaseResponse = await this._forwardToChatbase(message, classification.category);
+              
+              // Verificar si Chatbase está solicitando correo
+              if (chatbaseResponse && chatbaseResponse.toLowerCase().includes("correo electrónico")) {
+                  await conversationService.updateConversationMetadata(
+                      conversation.whatsappId,
+                      { awaitingEmail: true }
+                  );
+                  logInfo('Esperando correo electrónico', { whatsappId: conversation.whatsappId });
+              }
           }
 
           const formattedMessage = this.formatMessage(message, context);
@@ -45,33 +54,6 @@ class MessageProcessor {
           logError('Error processing normal message', { error });
           throw error;
       }
-  }
-
-  async _handleFirstInteraction(message, context) {
-      logInfo('First interaction detected', {
-          userId: message.from,
-          userName: context.contacts?.[0]?.profile?.name
-      });
-
-      await welcomeHandlerService.handleInitialInteraction(
-          message.from,
-          context.contacts?.[0]?.profile?.name || 'Usuario'
-      );
-
-      const conversation = await this.conversationService.createConversation(
-          message.from,
-          message.from
-      );
-
-      if (this.wsManager) {
-          this.wsManager.broadcastConversationUpdate(conversation);
-      }
-
-      return {
-          success: true,
-          isFirstInteraction: true,
-          conversation
-      };
   }
 
   async _handleCategoryClassification(message, conversation) {
@@ -117,13 +99,15 @@ class MessageProcessor {
 
   async _forwardToChatbase(message, category) {
       try {
-          await chatbaseController[`handle${this._formatCategory(category)}`]({
+          const response = await chatbaseController[`handle${this._formatCategory(category)}`]({
               body: { message }
           }, {
               json: () => {}
           });
+          return response?.text || '';
       } catch (error) {
           logError('Error forwarding to Chatbase', { error });
+          return '';
       }
   }
 

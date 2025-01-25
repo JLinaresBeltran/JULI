@@ -100,22 +100,16 @@ const webhookController = {
                     if (!change.value?.messages) continue;
 
                     const message = change.value.messages[0];
-                    
-                    // Get conversation state before any processing
                     const conversation = await conversationService.getConversation(message.from);
-                    
-                    // Check if we're awaiting email
-                    if (conversation?.metadata?.awaitingEmail === true && 
-                        message.type === 'text') {
+
+                    // Intercepción del correo electrónico
+                    if (conversation?.metadata?.awaitingEmail === true && message.type === 'text') {
                         const email = message.text.body.trim();
-                        
                         if (this._isValidEmail(email)) {
-                            logInfo('Email válido recibido, iniciando proceso de documento', { email });
                             await this._handleEmailSubmission(message, conversation, change.value);
                             return res.status(200).send('EVENT_RECEIVED');
                         }
                         
-                        // Invalid email - send error message
                         await whatsappService.sendTextMessage(
                             conversation.whatsappId,
                             "El correo electrónico no es válido. Por favor, ingresa un correo válido."
@@ -123,6 +117,7 @@ const webhookController = {
                         return res.status(200).send('EVENT_RECEIVED');
                     }
 
+                    // Procesamiento normal
                     if (this._isConversationStart(change)) {
                         await this._handleNewUserWelcome(message.from, change.value);
                         results.processed++;
@@ -136,7 +131,7 @@ const webhookController = {
             logInfo('Webhook processed', { results });
             return res.status(200).send('EVENT_RECEIVED');
         } catch (error) {
-            logError('Webhook error', { error: error.message });
+            logError('Webhook error', { error });
             return res.status(200).send('EVENT_RECEIVED');
         }
     },
