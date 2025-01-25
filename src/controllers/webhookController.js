@@ -100,15 +100,26 @@ const webhookController = {
                     if (!change.value?.messages) continue;
 
                     const message = change.value.messages[0];
+                    
+                    // Get conversation state before any processing
                     const conversation = await conversationService.getConversation(message.from);
-
-                    if (conversation?.metadata?.awaitingEmail && 
-                        message.type === 'text' && 
-                        this._isValidEmail(message.text.body)) {
+                    
+                    // Check if we're awaiting email
+                    if (conversation?.metadata?.awaitingEmail === true && 
+                        message.type === 'text') {
+                        const email = message.text.body.trim();
                         
-                        logInfo('Correo electrónico detectado, iniciando proceso de documento');
-                        await this._handleEmailSubmission(message, conversation, change.value);
-                        results.processed++;
+                        if (this._isValidEmail(email)) {
+                            logInfo('Email válido recibido, iniciando proceso de documento', { email });
+                            await this._handleEmailSubmission(message, conversation, change.value);
+                            return res.status(200).send('EVENT_RECEIVED');
+                        }
+                        
+                        // Invalid email - send error message
+                        await whatsappService.sendTextMessage(
+                            conversation.whatsappId,
+                            "El correo electrónico no es válido. Por favor, ingresa un correo válido."
+                        );
                         return res.status(200).send('EVENT_RECEIVED');
                     }
 
@@ -225,7 +236,6 @@ const webhookController = {
                 return {};
         }
     },
-
     _isConversationStart(change) {
         return (
             change.field === "messages" &&
