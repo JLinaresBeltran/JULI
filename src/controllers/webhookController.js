@@ -110,25 +110,30 @@ const webhookController = {
 
             for (const entry of req.body.entry) {
                 for (const change of entry.changes) {
-                    if (change.value?.messages) {
-                        const message = change.value.messages[0];
-                        const conversation = await conversationService.getConversation(message.from);
+                    if (!change.value?.messages) continue;
 
-                        // Verificar trigger de correo antes del procesamiento normal
-                        if (conversation?.metadata?.awaitingEmail && message.type === 'text') {
-                            await this._handleEmailTrigger(message, conversation, change.value);
-                            results.processed++;
-                            continue;
-                        }
+                    const message = change.value.messages[0];
+                    const conversation = await conversationService.getConversation(message.from);
 
-                        if (this._isConversationStart(change)) {
-                            await this._handleNewUserWelcome(message.from, change.value);
-                            results.processed++;
-                            continue;
-                        }
-
-                        await this._processMessages(change.value.messages, change.value, results);
+                    // Verificar si es un correo electrónico antes que cualquier otro procesamiento
+                    if (conversation?.metadata?.awaitingEmail && 
+                        message.type === 'text' && 
+                        this._isValidEmail(message.text.body)) {
+                        
+                        logInfo('Correo electrónico detectado, iniciando proceso de documento');
+                        await this._handleEmailSubmission(message, conversation, change.value);
+                        results.processed++;
+                        continue;
                     }
+
+                    // Procesar otros tipos de mensajes
+                    if (this._isConversationStart(change)) {
+                        await this._handleNewUserWelcome(message.from, change.value);
+                        results.processed++;
+                        continue;
+                    }
+
+                    await this._processMessages(change.value.messages, change.value, results);
 
                     if (change.value?.statuses) {
                         await this._processStatuses(change.value.statuses, change.value, results);
@@ -144,23 +149,22 @@ const webhookController = {
         }
     },
 
-    async _handleEmailTrigger(message, conversation, context) {
+    _isValidEmail(email) {
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+    },
+
+    async _handleEmailSubmission(message, conversation, context) {
         const email = message.text.body.trim();
-        
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-            await whatsappService.sendTextMessage(
-                conversation.whatsappId,
-                "El correo electrónico no es válido. Por favor, ingresa un correo válido."
-            );
-            return;
-        }
 
         try {
+            logInfo('Iniciando proceso de documento legal', { email, whatsappId: conversation.whatsappId });
+            
             await conversationService.updateConversationMetadata(
                 conversation.whatsappId,
                 { 
                     email: email,
-                    awaitingEmail: false
+                    awaitingEmail: false,
+                    processingDocument: true
                 }
             );
 
