@@ -87,19 +87,6 @@ function isGreeting(text) {
 }
 
 const webhookController = {
-    async verifyWebhook(req, res) {
-        const { mode, token, challenge } = {
-            mode: req.query['hub.mode'],
-            token: req.query['hub.verify_token'],
-            challenge: req.query['hub.challenge']
-        };
-        
-        if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
-            return res.status(200).send(challenge);
-        }
-        return res.status(403).send('Forbidden');
-    },
-
     async receiveMessage(req, res) {
         try {
             if (!validateWebhookPayload(req.body)) {
@@ -115,7 +102,6 @@ const webhookController = {
                     const message = change.value.messages[0];
                     const conversation = await conversationService.getConversation(message.from);
 
-                    // Verificar si es un correo electrónico antes que cualquier otro procesamiento
                     if (conversation?.metadata?.awaitingEmail && 
                         message.type === 'text' && 
                         this._isValidEmail(message.text.body)) {
@@ -123,10 +109,9 @@ const webhookController = {
                         logInfo('Correo electrónico detectado, iniciando proceso de documento');
                         await this._handleEmailSubmission(message, conversation, change.value);
                         results.processed++;
-                        continue;
+                        return res.status(200).send('EVENT_RECEIVED');
                     }
 
-                    // Procesar otros tipos de mensajes
                     if (this._isConversationStart(change)) {
                         await this._handleNewUserWelcome(message.from, change.value);
                         results.processed++;
@@ -134,10 +119,6 @@ const webhookController = {
                     }
 
                     await this._processMessages(change.value.messages, change.value, results);
-
-                    if (change.value?.statuses) {
-                        await this._processStatuses(change.value.statuses, change.value, results);
-                    }
                 }
             }
 
@@ -155,10 +136,14 @@ const webhookController = {
 
     async _handleEmailSubmission(message, conversation, context) {
         const email = message.text.body.trim();
-
+        
         try {
-            logInfo('Iniciando proceso de documento legal', { email, whatsappId: conversation.whatsappId });
-            
+            logInfo('Iniciando proceso de documento legal', { 
+                email, 
+                whatsappId: conversation.whatsappId,
+                category: conversation.category 
+            });
+
             await conversationService.updateConversationMetadata(
                 conversation.whatsappId,
                 { 
@@ -166,6 +151,11 @@ const webhookController = {
                     awaitingEmail: false,
                     processingDocument: true
                 }
+            );
+
+            await whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "Procesando tu solicitud para generar el documento legal..."
             );
 
             const customerData = {
@@ -176,11 +166,6 @@ const webhookController = {
                 address: conversation.metadata?.address || "No especificado",
                 ...this._getServiceSpecificData(conversation)
             };
-
-            await whatsappService.sendTextMessage(
-                conversation.whatsappId,
-                "Procesando tu solicitud para generar el documento legal..."
-            );
 
             const result = await legalAgentSystem.processComplaint(
                 conversation.category,
@@ -199,12 +184,18 @@ const webhookController = {
                 "¡Documento generado y enviado a tu correo electrónico!"
             );
 
+            await conversationService.updateConversationMetadata(
+                conversation.whatsappId,
+                { processingDocument: false }
+            );
+
         } catch (error) {
             logError('Error en procesamiento de documento', { error });
             await whatsappService.sendTextMessage(
                 conversation.whatsappId,
                 "Lo siento, hubo un error procesando tu solicitud. Por favor, intenta nuevamente."
             );
+            throw error;
         }
     },
 
