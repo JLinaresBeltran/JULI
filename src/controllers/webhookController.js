@@ -6,8 +6,6 @@ const legalAgentSystem = require('../services/legalAgents');
 const documentService = require('../services/documentService');
 const { logInfo, logError } = require('../utils/logger');
 
-const DOCUMENT_TRIGGER = "juli quiero el documento";
-
 function validateWebhookPayload(body) {
     if (!body || !body.object || !Array.isArray(body.entry)) {
         return false;
@@ -112,26 +110,21 @@ const webhookController = {
 
             for (const entry of req.body.entry) {
                 for (const change of entry.changes) {
-                    if (this._isConversationStart(change)) {
-                        try {
-                            const userId = change.value.contacts[0].wa_id;
-                            await this._handleNewUserWelcome(userId, change.value);
-                            results.processed++;
-                            continue;
-                        } catch (error) {
-                            logError('Welcome flow error', { error: error.message });
-                            results.errors++;
-                        }
-                    }
-
                     if (change.value?.messages) {
                         const message = change.value.messages[0];
-                        
-                        // Check document trigger before any processing
-                        if (message.type === 'text' && 
-                            message.text.body.toLowerCase().trim() === DOCUMENT_TRIGGER) {
-                            await this._handleDocumentTrigger(message, change.value);
-                            return;
+                        const conversation = await conversationService.getConversation(message.from);
+
+                        // Verificar trigger de correo antes del procesamiento normal
+                        if (conversation?.metadata?.awaitingEmail && message.type === 'text') {
+                            await this._handleEmailTrigger(message, conversation, change.value);
+                            results.processed++;
+                            continue;
+                        }
+
+                        if (this._isConversationStart(change)) {
+                            await this._handleNewUserWelcome(message.from, change.value);
+                            results.processed++;
+                            continue;
                         }
 
                         await this._processMessages(change.value.messages, change.value, results);
@@ -151,62 +144,91 @@ const webhookController = {
         }
     },
 
-    async _handleDocumentTrigger(message, context) {
-        try {
-            const conversation = await conversationService.getConversation(message.from);
-            
-            const customerData = {
-                name: context.contacts?.[0]?.profile?.name,
-                documentNumber: conversation.metadata?.documentNumber,
-                email: conversation.metadata?.email,
-                phone: message.from,
-                address: "No especificado",
-                numero_reserva: "DEFAULT123",
-                numero_vuelo: "XY000",
-                fecha_vuelo: new Date().toISOString().split('T')[0],
-                ruta: "BOG-MIA",
-                valor_tiquete: "0"
-            };
- 
-            if (!customerData.email) {
-                await whatsappService.sendTextMessage(
-                    message.from,
-                    "Indícame tu correo electrónico"
-                );
-                return;
-            }
- 
+    async _handleEmailTrigger(message, conversation, context) {
+        const email = message.text.body.trim();
+        
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
             await whatsappService.sendTextMessage(
-                message.from,
-                "Estoy procesando tu solicitud para generar el documento. Esto puede tomar unos momentos."
+                conversation.whatsappId,
+                "El correo electrónico no es válido. Por favor, ingresa un correo válido."
             );
- 
+            return;
+        }
+
+        try {
+            await conversationService.updateConversationMetadata(
+                conversation.whatsappId,
+                { 
+                    email: email,
+                    awaitingEmail: false
+                }
+            );
+
+            const customerData = {
+                name: context.contacts?.[0]?.profile?.name || 'Usuario',
+                documentNumber: conversation.metadata?.documentNumber,
+                email: email,
+                phone: message.from,
+                address: conversation.metadata?.address || "No especificado",
+                ...this._getServiceSpecificData(conversation)
+            };
+
+            await whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "Procesando tu solicitud para generar el documento legal..."
+            );
+
             const result = await legalAgentSystem.processComplaint(
                 conversation.category,
                 conversation.getMessages(),
                 customerData
             );
- 
+
             await documentService.generateDocument(
                 conversation.category,
                 result,
                 customerData
             );
- 
+
             await whatsappService.sendTextMessage(
-                message.from,
-                "¡Listo! Tu documento ha sido generado y enviado a tu correo electrónico."
+                conversation.whatsappId,
+                "¡Documento generado y enviado a tu correo electrónico!"
             );
- 
+
         } catch (error) {
-            logError('Error handling document trigger', { error });
-            throw error;
+            logError('Error en procesamiento de documento', { error });
+            await whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "Lo siento, hubo un error procesando tu solicitud. Por favor, intenta nuevamente."
+            );
         }
     },
 
-    _validateCustomerData(customerData) {
-        const requiredFields = ['email'];
-        return requiredFields.filter(field => !customerData[field]);
+    _getServiceSpecificData(conversation) {
+        switch(conversation.category) {
+            case 'transporte_aereo':
+                return {
+                    numero_reserva: conversation.metadata?.reservationNumber || "N/A",
+                    numero_vuelo: conversation.metadata?.flightNumber || "N/A",
+                    fecha_vuelo: conversation.metadata?.flightDate || new Date().toISOString().split('T')[0],
+                    ruta: conversation.metadata?.route || "N/A",
+                    valor_tiquete: conversation.metadata?.ticketValue || "0"
+                };
+            case 'servicios_publicos':
+                return {
+                    cuenta_contrato: conversation.metadata?.accountNumber || "N/A",
+                    tipo_servicio: conversation.metadata?.serviceType || "N/A",
+                    periodo_facturacion: conversation.metadata?.billingPeriod || "N/A"
+                };
+            case 'telecomunicaciones':
+                return {
+                    numero_linea: conversation.metadata?.lineNumber || "N/A",
+                    plan_contratado: conversation.metadata?.plan || "N/A",
+                    fecha_contratacion: conversation.metadata?.contractDate || "N/A"
+                };
+            default:
+                return {};
+        }
     },
 
     _isConversationStart(change) {
