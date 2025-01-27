@@ -1,3 +1,4 @@
+// src/services/webhook/MessageProcessor.js
 const { logInfo, logError } = require('../../utils/logger');
 const queryClassifierService = require('../queryClassifierService');
 const chatbaseController = require('../../controllers/chatbaseController');
@@ -16,8 +17,12 @@ class MessageProcessor {
         try {
             const conversation = await this.conversationService.getConversation(message.from);
             
-            // Log inicial detallado
-            const originalMessage = message.text?.body || '';
+            // Solo procesar mensajes de texto
+            if (message.type !== 'text') {
+                return await this._processNormalMessage(message, conversation, context);
+            }
+
+            const originalMessage = message.text.body;
             const normalizedMessage = originalMessage.toLowerCase().trim();
 
             logInfo('Message processing started', {
@@ -28,43 +33,28 @@ class MessageProcessor {
                 category: conversation?.category
             });
 
-            // Verificar trigger de documento ANTES de cualquier otro procesamiento
-            if (message.type === 'text' && normalizedMessage === this.documentRequestKey) {
+            // Verificar si es un comando de documento
+            if (normalizedMessage === this.documentRequestKey) {
                 logInfo('Document request trigger detected', {
-                    originalMessage,
-                    normalizedMessage
+                    category: conversation?.category
                 });
                 return await this._handleDocumentRequest(message, conversation);
             }
 
-            // Si el mensaje es el trigger de documento
-            if (message.type === 'text' && normalizedMessage === this.documentRequestKey) {
-                logInfo('Document request detected', {
-                    originalMessage,
-                    normalizedMessage,
-                    matched: true
+            // Verificar si estamos esperando un email
+            if (conversation?.metadata?.awaitingEmail) {
+                logInfo('Email submission detected', {
+                    email: normalizedMessage
                 });
-                return await this._handleDocumentRequest(message, conversation);
+                return await this._handleEmailSubmission(message, conversation, context);
             }
 
-            // Si estamos esperando un correo electrónico
-            if (message.type === 'text' && conversation?.metadata?.awaitingEmail) {
-                const email = message.text.body.trim();
-                if (this._isValidEmail(email)) {
-                    return await this._handleEmailSubmission(message, conversation, context);
-                }
-                
-                await this.whatsappService.sendTextMessage(
-                    conversation.whatsappId,
-                    "El correo electrónico no es válido. Por favor, ingresa un correo válido."
-                );
-                return { success: true, messageProcessed: true };
-            }
-
-            // Procesamiento normal del mensaje
+            // Procesar como mensaje normal
             return await this._processNormalMessage(message, conversation, context);
+
         } catch (error) {
             logError('Message processing error', { error });
+            await this._sendErrorMessage(message.from);
             throw error;
         }
     }
@@ -73,11 +63,11 @@ class MessageProcessor {
         try {
             logInfo('Processing document request', {
                 whatsappId: conversation.whatsappId,
-                category: conversation.category
+                category: conversation?.category
             });
 
-            // Verificar si ya hay una categoría asignada
-            if (!conversation.category || conversation.category === 'unknown') {
+            // Verificar si tenemos una categoría válida
+            if (!conversation?.category || conversation.category === 'unknown') {
                 await this.whatsappService.sendTextMessage(
                     conversation.whatsappId,
                     "Por favor, cuéntame primero tu caso para poder ayudarte con el documento adecuado."
@@ -85,12 +75,13 @@ class MessageProcessor {
                 return { success: true, messageProcessed: true };
             }
 
-            // Actualizar metadata para esperar el correo
+            // Actualizar estado de la conversación
             await this.conversationService.updateConversationMetadata(
                 conversation.whatsappId,
-                { 
+                {
                     awaitingEmail: true,
-                    emailRequestTimestamp: new Date().toISOString()
+                    emailRequestTimestamp: new Date().toISOString(),
+                    documentRequestPending: true
                 }
             );
 
@@ -103,6 +94,7 @@ class MessageProcessor {
             return { success: true, messageProcessed: true };
         } catch (error) {
             logError('Error handling document request', { error });
+            await this._sendErrorMessage(message.from);
             throw error;
         }
     }
@@ -110,27 +102,38 @@ class MessageProcessor {
     async _handleEmailSubmission(message, conversation, context) {
         const email = message.text.body.trim();
         
+        if (!this._isValidEmail(email)) {
+            await this.whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "El correo electrónico no es válido. Por favor, ingresa un correo válido."
+            );
+            return { success: true, messageProcessed: true };
+        }
+
         try {
-            logInfo('Starting document generation process', { 
-                email, 
+            logInfo('Starting document generation process', {
+                email,
                 whatsappId: conversation.whatsappId,
-                category: conversation.category 
+                category: conversation.category
             });
 
+            // Actualizar estado
             await this.conversationService.updateConversationMetadata(
                 conversation.whatsappId,
-                { 
+                {
                     email: email,
                     awaitingEmail: false,
                     processingDocument: true
                 }
             );
 
+            // Notificar inicio del proceso
             await this.whatsappService.sendTextMessage(
                 conversation.whatsappId,
                 "Estamos procesando tu solicitud para generar el documento legal..."
             );
 
+            // Preparar datos del cliente
             const customerData = {
                 name: context.contacts?.[0]?.profile?.name || 'Usuario',
                 documentNumber: conversation.metadata?.documentNumber,
@@ -140,6 +143,7 @@ class MessageProcessor {
                 ...this._getServiceSpecificData(conversation)
             };
 
+            // Generar quejas y documento
             const result = await this.legalAgentSystem.processComplaint(
                 conversation.category,
                 conversation.getMessages(),
@@ -152,31 +156,32 @@ class MessageProcessor {
                 customerData
             );
 
+            // Actualizar estado final
+            await this.conversationService.updateConversationMetadata(
+                conversation.whatsappId,
+                {
+                    processingDocument: false,
+                    documentGenerated: true,
+                    documentGeneratedTimestamp: new Date().toISOString()
+                }
+            );
+
+            // Notificar éxito
             await this.whatsappService.sendTextMessage(
                 conversation.whatsappId,
                 "¡Tu documento ha sido generado y enviado a tu correo electrónico!"
             );
 
-            await this.conversationService.updateConversationMetadata(
-                conversation.whatsappId,
-                { processingDocument: false }
-            );
-
             return { success: true, messageProcessed: true };
-
         } catch (error) {
             logError('Error processing document', { error });
-            await this.whatsappService.sendTextMessage(
-                conversation.whatsappId,
-                "Lo siento, hubo un error procesando tu solicitud. Por favor, intenta nuevamente."
-            );
+            await this._sendErrorMessage(message.from);
             throw error;
         }
     }
 
     async _processNormalMessage(message, conversation, context) {
         try {
-            // Si es el primer mensaje o necesita clasificación
             if (conversation.shouldClassify()) {
                 logInfo('Clasificando consulta', {
                     text: message.text?.body
@@ -184,23 +189,19 @@ class MessageProcessor {
 
                 const classification = await this._handleCategoryClassification(message, conversation);
                 
-                // Si ya tiene categoría, usar Chatbase
                 if (classification.category !== 'unknown') {
-                    const chatbaseResponse = await this._forwardToChatbase(message, classification.category);
+                    await this._handleChatbaseResponse(message, classification.category, conversation);
                 }
-            } else {
-                // Usar categoría existente si ya está clasificada
-                if (conversation.category && conversation.category !== 'unknown') {
-                    logInfo('Usando categoría existente', {
-                        category: conversation.category
-                    });
-                    await this._forwardToChatbase(message, conversation.category);
-                }
+            } else if (conversation.category && conversation.category !== 'unknown') {
+                logInfo('Usando categoría existente', {
+                    category: conversation.category
+                });
+                await this._handleChatbaseResponse(message, conversation.category, conversation);
             }
 
             const formattedMessage = this.formatMessage(message, context);
             await this.conversationService.processIncomingMessage(formattedMessage);
-            
+
             if (message.type === 'text' || message.type === 'audio') {
                 await this.whatsappService.markAsRead(message.id);
             }
@@ -220,18 +221,18 @@ class MessageProcessor {
         try {
             const classification = await queryClassifierService.classifyQuery(message.text.body);
             logInfo('Resultado de clasificación', classification);
-            
+
             await this.conversationService.updateConversationMetadata(
                 conversation.whatsappId,
-                { 
+                {
                     category: classification.category,
-                    classificationConfidence: classification.confidence 
+                    classificationConfidence: classification.confidence
                 }
             );
 
             if (classification.category !== 'unknown') {
                 await this._sendCategoryConfirmation(
-                    conversation.whatsappId, 
+                    conversation.whatsappId,
                     classification.category
                 );
             }
@@ -243,22 +244,25 @@ class MessageProcessor {
         }
     }
 
-    async _forwardToChatbase(message, category) {
+    async _handleChatbaseResponse(message, category, conversation) {
         try {
-            logInfo('Iniciando nueva conversación con Chatbase', { category });
+            logInfo('Solicitando respuesta a Chatbase', {
+                serviceType: category,
+                conversationId: conversation.whatsappId
+            });
 
-            const result = await chatbaseController[`handle${this._formatCategory(category)}`](
+            const response = await chatbaseController[`handle${this._formatCategory(category)}`](
                 message.text.body
             );
 
-            if (result && result.text) {
+            if (response && response.text) {
                 await this.whatsappService.sendTextMessage(
                     message.from,
-                    result.text
+                    response.text
                 );
             }
 
-            return result;
+            return response;
         } catch (error) {
             logError('Error forwarding to Chatbase', { error });
             return null;
@@ -313,8 +317,19 @@ class MessageProcessor {
         }
     }
 
+    async _sendErrorMessage(to) {
+        try {
+            await this.whatsappService.sendTextMessage(
+                to,
+                "Lo siento, hubo un error procesando tu solicitud. Por favor, intenta nuevamente."
+            );
+        } catch (error) {
+            logError('Error sending error message', { error });
+        }
+    }
+
     formatMessage(message, context = {}) {
-        const formattedMessage = {
+        return {
             id: message.id,
             from: message.from,
             timestamp: new Date(parseInt(message.timestamp) * 1000).toISOString(),
@@ -324,14 +339,9 @@ class MessageProcessor {
             metadata: {
                 ...context.metadata,
                 profile: context.contacts?.[0]?.profile
-            }
+            },
+            text: message.type === 'text' ? { body: message.text.body } : undefined
         };
-
-        if (message.type === 'text') {
-            formattedMessage.text = { body: message.text.body };
-        }
-
-        return formattedMessage;
     }
 }
 
