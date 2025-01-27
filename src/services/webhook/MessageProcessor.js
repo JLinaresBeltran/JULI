@@ -10,6 +10,25 @@ class MessageProcessor {
       this.wsManager = wsManager;
       this.legalAgentSystem = legalAgentSystem;
       this.documentService = documentService;
+
+      // Patrones que indican solicitud de documento o correo
+      this.emailRequestPatterns = [
+          "juli quiero el documento",
+          "necesito tu correo electrónico",
+          "por favor proporciona tu correo",
+          "indica tu correo electrónico",
+          "enviaremos el documento a tu correo",
+          "necesitamos tu email"
+      ];
+  }
+
+  isRequestingEmail(message) {
+      if (!message || typeof message !== 'string') return false;
+      
+      const normalizedMessage = message.toLowerCase();
+      return this.emailRequestPatterns.some(pattern => 
+          normalizedMessage.includes(pattern.toLowerCase())
+      );
   }
 
   async processMessage(message, context) {
@@ -24,17 +43,46 @@ class MessageProcessor {
 
   async _processNormalMessage(message, conversation, context) {
       try {
+          // Verificar si el usuario está solicitando el documento explícitamente
+          if (message.text?.body && message.text.body.toLowerCase().includes("juli quiero el documento")) {
+              logInfo('Usuario solicitó documento explícitamente', {
+                  whatsappId: conversation.whatsappId,
+                  category: conversation.category
+              });
+
+              await this.conversationService.updateConversationMetadata(
+                  conversation.whatsappId,
+                  { 
+                      awaitingEmail: true,
+                      emailRequestTimestamp: new Date().toISOString()
+                  }
+              );
+
+              await this.whatsappService.sendTextMessage(
+                  conversation.whatsappId,
+                  "Por favor, proporciona tu correo electrónico para enviarte el documento de reclamación."
+              );
+
+              return { success: true, messageProcessed: true };
+          }
+
           if (conversation.shouldClassify()) {
               const classification = await this._handleCategoryClassification(message, conversation);
               const chatbaseResponse = await this._forwardToChatbase(message, classification.category);
               
               // Verificar si Chatbase está solicitando correo
-              if (chatbaseResponse && chatbaseResponse.toLowerCase().includes("correo electrónico")) {
-                  await conversationService.updateConversationMetadata(
+              if (this.isRequestingEmail(chatbaseResponse)) {
+                  await this.conversationService.updateConversationMetadata(
                       conversation.whatsappId,
-                      { awaitingEmail: true }
+                      { 
+                          awaitingEmail: true,
+                          emailRequestTimestamp: new Date().toISOString()
+                      }
                   );
-                  logInfo('Esperando correo electrónico', { whatsappId: conversation.whatsappId });
+                  logInfo('Esperando correo electrónico', { 
+                      whatsappId: conversation.whatsappId,
+                      source: 'chatbase_response'
+                  });
               }
           }
 
@@ -104,6 +152,14 @@ class MessageProcessor {
           }, {
               json: () => {}
           });
+
+          // Log para debugging de respuestas de Chatbase
+          logInfo('Chatbase response received', {
+              category,
+              responseText: response?.text,
+              isRequestingEmail: this.isRequestingEmail(response?.text)
+          });
+
           return response?.text || '';
       } catch (error) {
           logError('Error forwarding to Chatbase', { error });
