@@ -6,6 +6,8 @@ const legalAgentSystem = require('../services/legalAgents');
 const documentService = require('../services/documentService');
 const { logInfo, logError } = require('../utils/logger');
 
+const documentRequestKey = "juli quiero el documento";
+
 function validateWebhookPayload(body) {
     if (!body || !body.object || !Array.isArray(body.entry)) {
         return false;
@@ -102,7 +104,6 @@ const webhookController = {
                     const message = change.value.messages[0];
                     const conversation = await conversationService.getConversation(message.from);
 
-                    // Verificar si estamos esperando un email
                     if (conversation?.metadata?.awaitingEmail === true && 
                         message.type === 'text') {
                         const email = message.text.body.trim();
@@ -118,7 +119,6 @@ const webhookController = {
                         return res.status(200).send('EVENT_RECEIVED');
                     }
 
-                    // Procesamiento normal de mensajes
                     if (this._isConversationStart(change)) {
                         await this._handleNewUserWelcome(message.from, change.value);
                         results.processed++;
@@ -234,6 +234,97 @@ const webhookController = {
         }
     },
 
+    async _processMessages(messages, context, results) {
+        for (const message of messages) {
+            try {
+                logInfo('Processing incoming message', {
+                    messageId: message.id,
+                    type: message.type,
+                    from: message.from
+                });
+                
+                if (!validateMessage(message, context)) {
+                    throw new Error('Invalid message format');
+                }
+                
+                const conversation = await conversationService.getConversation(message.from);
+                const isNewUser = !conversation;
+
+                if (isNewUser) {
+                    await this._handleNewUserWelcome(message.from, context);
+                }
+
+                if (message.type === 'text' && message.text.body.toLowerCase().trim() === documentRequestKey) {
+                    logInfo('Document request detected', {
+                        whatsappId: message.from,
+                        category: conversation?.category
+                    });
+                    
+                    if (!conversation?.category || conversation.category === 'unknown') {
+                        await whatsappService.sendTextMessage(
+                            message.from,
+                            "Por favor, cuéntame primero tu caso para poder ayudarte con el documento adecuado."
+                        );
+                        return;
+                    }
+
+                    await conversationService.updateConversationMetadata(
+                        message.from,
+                        {
+                            awaitingEmail: true,
+                            emailRequestTimestamp: new Date().toISOString(),
+                            documentRequestPending: true
+                        }
+                    );
+
+                    await whatsappService.sendTextMessage(
+                        message.from,
+                        "Por favor, proporciona tu correo electrónico para enviarte el documento de reclamación."
+                    );
+                    continue;
+                }
+
+                if (conversation?.metadata?.awaitingEmail && message.type === 'text') {
+                    const email = message.text.body.trim();
+                    if (this._isValidEmail(email)) {
+                        await this._handleEmailSubmission(message, conversation, context);
+                        continue;
+                    } else {
+                        await whatsappService.sendTextMessage(
+                            message.from,
+                            "El correo electrónico no es válido. Por favor, ingresa un correo válido."
+                        );
+                        continue;
+                    }
+                }
+
+                const formattedMessage = formatMessage(message, context);
+                await conversationService.processIncomingMessage(formattedMessage, {
+                    createIfNotExists: true,
+                    skipClassification: isNewUser
+                });
+
+                if (message.type === 'text' || message.type === 'audio') {
+                    await whatsappService.markAsRead(message.id);
+                }
+
+                this._broadcastUpdates(conversation);
+                this._addResult(results, message, 'success', {
+                    isFirstInteraction: isNewUser,
+                    messageType: message.type
+                });
+
+            } catch (error) {
+                logError('Message processing error', {
+                    error: error.message,
+                    messageId: message?.id,
+                    messageType: message?.type
+                });
+                this._addResult(results, message, 'error', error);
+            }
+        }
+    },
+
     _isConversationStart(change) {
         return (
             change.field === "messages" &&
@@ -259,62 +350,6 @@ const webhookController = {
         } catch (error) {
             logError('Welcome flow error', { error: error.message });
             throw error;
-        }
-    },
-
-    async _processMessages(messages, context, results) {
-        for (const message of messages) {
-            try {
-                logInfo('Processing incoming message', {
-                    messageId: message.id,
-                    type: message.type,
-                    from: message.from
-                });
-
-                if (!validateMessage(message, context)) {
-                    throw new Error('Invalid message format');
-                }
-
-                const conversation = await conversationService.getConversation(message.from);
-                const isNewUser = !conversation;
-
-                if (isNewUser) {
-                    await this._handleNewUserWelcome(message.from, context);
-                }
-
-                const formattedMessage = formatMessage(message, context);
-
-                if (message.type === 'audio') {
-                    logInfo('Processing audio message', {
-                        messageId: message.id,
-                        duration: message.audio?.duration,
-                        mimeType: message.audio?.mime_type
-                    });
-                }
-
-                await conversationService.processIncomingMessage(formattedMessage, {
-                    createIfNotExists: true,
-                    skipClassification: isNewUser
-                });
-
-                if (message.type === 'text' || message.type === 'audio') {
-                    await whatsappService.markAsRead(message.id);
-                }
-
-                this._broadcastUpdates(conversation);
-                this._addResult(results, message, 'success', { 
-                    isFirstInteraction: isNewUser,
-                    messageType: message.type
-                });
-
-            } catch (error) {
-                logError('Message processing error', { 
-                    error: error.message,
-                    messageId: message?.id,
-                    messageType: message?.type
-                });
-                this._addResult(results, message, 'error', error);
-            }
         }
     },
 
