@@ -26,9 +26,20 @@ class MessageProcessor {
       if (!message || typeof message !== 'string') return false;
       
       const normalizedMessage = message.toLowerCase();
-      return this.emailRequestPatterns.some(pattern => 
+      const matchedPattern = this.emailRequestPatterns.find(pattern => 
           normalizedMessage.includes(pattern.toLowerCase())
       );
+
+      if (matchedPattern) {
+          logInfo('Email request pattern matched', {
+              originalMessage: message,
+              normalizedMessage: normalizedMessage,
+              matchedPattern: matchedPattern
+          });
+          return true;
+      }
+
+      return false;
   }
 
   _isValidEmail(email) {
@@ -47,11 +58,18 @@ class MessageProcessor {
 
   async _processNormalMessage(message, conversation, context) {
       try {
-          // Check for document request first
-          if (message.text?.body && message.text.body.toLowerCase().includes("juli quiero el documento")) {
-              logInfo('Usuario solicitó documento explícitamente', {
-                  whatsappId: conversation.whatsappId,
-                  category: conversation.category
+          logInfo('Processing message', {
+              type: message.type,
+              content: message.text?.body,
+              awaitingEmail: conversation?.metadata?.awaitingEmail,
+              isDocumentRequest: message.text?.body ? this.isRequestingEmail(message.text.body) : false
+          });
+
+          // Verificar si el usuario está solicitando el documento explícitamente
+          if (message.text?.body && this.isRequestingEmail(message.text.body)) {
+              logInfo('Document request detected in message', {
+                  text: message.text.body,
+                  pattern: message.text.body.toLowerCase()
               });
 
               await this.conversationService.updateConversationMetadata(
@@ -70,7 +88,7 @@ class MessageProcessor {
               return { success: true, messageProcessed: true };
           }
 
-          // Check for email if awaiting one
+          // Verificar si estamos esperando un correo
           if (message.type === 'text' && conversation?.metadata?.awaitingEmail) {
               const email = message.text.body.trim();
               if (this._isValidEmail(email)) {
@@ -85,6 +103,7 @@ class MessageProcessor {
               }
           }
 
+          // Flujo normal de procesamiento
           if (conversation.shouldClassify()) {
               const classification = await this._handleCategoryClassification(message, conversation);
               const chatbaseResponse = await this._forwardToChatbase(message, classification.category);
