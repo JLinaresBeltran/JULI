@@ -6,6 +6,8 @@ class WebhookProcessor {
         this.conversationService = conversationService;
         this.whatsappService = whatsappService;
         this.wsManager = wsManager;
+        this.legalAgentSystem = legalAgentSystem;
+        this.documentService = documentService;
         this.messageProcessor = new MessageProcessor(
             conversationService,
             whatsappService,
@@ -42,78 +44,130 @@ class WebhookProcessor {
 
     async _processIncomingMessage(message, context, results) {
         try {
-            logInfo('Processing incoming message', {
-                type: message.type,
-                from: message.from
-            });
-    
-            // Obtener la conversación primero
-            const conversation = await this.conversationService.getConversation(message.from);
-    
-            // Solo procesar mensajes de texto
             if (message.type !== 'text') {
-                return await this._processNormalFlow(message, context, results);
+                await this._processNormalFlow(message, context, results);
+                return;
             }
-    
+
+            const conversation = await this.conversationService.getConversation(message.from);
             const normalizedMessage = message.text.body.toLowerCase().trim();
-    
-            // 1. Verificar si estamos esperando un email
+
+            logInfo('Processing message', {
+                type: message.type,
+                from: message.from,
+                awaitingEmail: conversation?.metadata?.awaitingEmail,
+                messageContent: normalizedMessage
+            });
+
+            // Verificar estado esperando email
             if (conversation?.metadata?.awaitingEmail === true) {
-                logInfo('Processing potential email submission', {
-                    message: normalizedMessage,
-                    whatsappId: message.from
-                });
-    
                 if (this._isValidEmail(normalizedMessage)) {
-                    await this._handleEmailSubmission(message, conversation, context);
+                    await this._processEmailSubmission(message, conversation, context);
                 } else {
                     await this.whatsappService.sendTextMessage(
                         message.from,
                         "El correo electrónico no es válido. Por favor, ingresa un correo válido."
                     );
                 }
-                this._addResult(results, message, 'success', { emailProcessed: true });
                 return;
             }
-    
-            // 2. Verificar si es solicitud de documento
+
+            // Verificar trigger de documento
             if (normalizedMessage === this.documentRequestKey) {
-                logInfo('Document request detected', {
-                    whatsappId: message.from,
-                    category: conversation?.category
-                });
-    
+                logInfo('Document request detected', { whatsappId: message.from });
+
                 if (!conversation?.category || conversation.category === 'unknown') {
                     await this.whatsappService.sendTextMessage(
-                        message.from,
+                        conversation.whatsappId,
                         "Por favor, cuéntame primero tu caso para poder ayudarte con el documento adecuado."
                     );
                 } else {
                     await this.conversationService.updateConversationMetadata(
-                        message.from,
+                        conversation.whatsappId,
                         {
                             awaitingEmail: true,
                             emailRequestTimestamp: new Date().toISOString(),
                             documentRequestPending: true
                         }
                     );
-    
+
                     await this.whatsappService.sendTextMessage(
-                        message.from,
+                        conversation.whatsappId,
                         "Por favor, proporciona tu correo electrónico para enviarte el documento de reclamación."
                     );
                 }
-                
-                this._addResult(results, message, 'success', { documentRequest: true });
                 return;
             }
-    
-            // 3. Procesar como mensaje normal
+
+            // Procesar como mensaje normal
             await this._processNormalFlow(message, context, results);
-    
+
         } catch (error) {
             logError('Error processing message', { error });
             this._addResult(results, message, 'error', { error });
+        }
+    }
+
+    async _processEmailSubmission(message, conversation, context) {
+        const email = message.text.body.trim();
+
+        try {
+            await this.conversationService.updateConversationMetadata(
+                conversation.whatsappId,
+                {
+                    email: email,
+                    awaitingEmail: false,
+                    processingDocument: true
+                }
+            );
+
+            await this.whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "Estamos procesando tu solicitud para generar el documento legal..."
+            );
+
+            const customerData = {
+                name: context.contacts?.[0]?.profile?.name || 'Usuario',
+                documentNumber: conversation.metadata?.documentNumber,
+                email: email,
+                phone: message.from,
+                address: conversation.metadata?.address || "No especificado",
+                ...this._getServiceSpecificData(conversation)
+            };
+
+            const result = await this.legalAgentSystem.processComplaint(
+                conversation.category,
+                conversation.getMessages(),
+                customerData
+            );
+
+            await this.documentService.generateDocument(
+                conversation.category,
+                result,
+                customerData
+            );
+
+            await this.whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "¡Tu documento ha sido generado y enviado a tu correo electrónico!"
+            );
+
+            await this.conversationService.updateConversationMetadata(
+                conversation.whatsappId,
+                {
+                    processingDocument: false,
+                    documentGenerated: true,
+                    documentGeneratedTimestamp: new Date().toISOString()
+                }
+            );
+
+        } catch (error) {
+            logError('Error processing document', { error });
+            await this.whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "Lo siento, hubo un error procesando tu solicitud. Por favor, intenta nuevamente."
+            );
+            throw error;
         }
     }
 
@@ -133,80 +187,31 @@ class WebhookProcessor {
         }
     }
 
-    async _handleEmailSubmission(message, conversation, context) {
-        const email = message.text.body.trim();
-    
-        try {
-            logInfo('Processing email submission', {
-                email,
-                whatsappId: conversation.whatsappId,
-                category: conversation.category
-            });
-    
-            // Actualizar estado a procesando
-            await this.conversationService.updateConversationMetadata(
-                conversation.whatsappId,
-                {
-                    email: email,
-                    awaitingEmail: false,
-                    processingDocument: true
-                }
-            );
-    
-            await this.whatsappService.sendTextMessage(
-                conversation.whatsappId,
-                "Estamos procesando tu solicitud para generar el documento legal..."
-            );
-    
-            const customerData = {
-                name: context.contacts?.[0]?.profile?.name || 'Usuario',
-                documentNumber: conversation.metadata?.documentNumber,
-                email: email,
-                phone: message.from,
-                address: conversation.metadata?.address || "No especificado",
-                ...this._getServiceSpecificData(conversation)
-            };
-    
-            // Procesar queja y generar documento
-            const result = await this.legalAgentSystem.processComplaint(
-                conversation.category,
-                conversation.getMessages(),
-                customerData
-            );
-    
-            await this.documentService.generateDocument(
-                conversation.category,
-                result,
-                customerData
-            );
-    
-            // Actualizar estado final
-            await this.conversationService.updateConversationMetadata(
-                conversation.whatsappId,
-                {
-                    processingDocument: false,
-                    documentGenerated: true,
-                    documentGeneratedTimestamp: new Date().toISOString()
-                }
-            );
-    
-            await this.whatsappService.sendTextMessage(
-                conversation.whatsappId,
-                "¡Tu documento ha sido generado y enviado a tu correo electrónico!"
-            );
-    
-        } catch (error) {
-            logError('Error processing document', { error });
-            await this.whatsappService.sendTextMessage(
-                conversation.whatsappId,
-                "Lo siento, hubo un error procesando tu solicitud. Por favor, intenta nuevamente."
-            );
-            throw error;
-        }
-    }
-    
     _isValidEmail(email) {
         return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+    }
+
+    _validateWebhookPayload(body) {
+        return body && 
+               body.object === 'whatsapp_business_account' && 
+               Array.isArray(body.entry);
+    }
+
+    _addResult(results, message, status, extra = {}) {
+        if (status === 'success') {
+            results.processed++;
+        } else {
+            results.errors++;
+        }
+
+        results.details.push({
+            id: message.id,
+            status,
+            type: message.type,
+            error: extra.error?.message,
+            isFirstInteraction: extra.isFirstInteraction || false,
+            timestamp: new Date()
+        });
     }
 
     _getServiceSpecificData(conversation) {
@@ -234,44 +239,6 @@ class WebhookProcessor {
             default:
                 return {};
         }
-    }
-
-    _addResult(results, message, status, extra = {}) {
-        if (status === 'success') {
-            results.processed++;
-        } else {
-            results.errors++;
-        }
-
-        results.details.push({
-            id: message.id,
-            status,
-            type: message.type,
-            error: extra.error?.message,
-            isFirstInteraction: extra.isFirstInteraction || false,
-            documentRequest: extra.documentRequest || false,
-            emailSubmission: extra.emailSubmission || false,
-            invalidEmail: extra.invalidEmail || false,
-            timestamp: new Date()
-        });
-    }
-
-    _validateWebhookPayload(body) {
-        return body && 
-               body.object === 'whatsapp_business_account' && 
-               Array.isArray(body.entry);
-    }
-
-    _notifyProcessingSummary(results) {
-        this.wsManager.broadcast({
-            type: 'webhookProcessingSummary',
-            data: {
-                totalMessages: results.processed + results.errors,
-                processedMessages: results.processed,
-                failedMessages: results.errors,
-                timestamp: new Date()
-            }
-        });
     }
 }
 
