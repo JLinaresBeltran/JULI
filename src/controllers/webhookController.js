@@ -102,8 +102,9 @@ const webhookController = {
                     const message = change.value.messages[0];
                     const conversation = await conversationService.getConversation(message.from);
 
-                    // Intercepción del correo electrónico
-                    if (conversation?.metadata?.awaitingEmail === true && message.type === 'text') {
+                    // Verificar si estamos esperando un email
+                    if (conversation?.metadata?.awaitingEmail === true && 
+                        message.type === 'text') {
                         const email = message.text.body.trim();
                         if (this._isValidEmail(email)) {
                             await this._handleEmailSubmission(message, conversation, change.value);
@@ -117,7 +118,7 @@ const webhookController = {
                         return res.status(200).send('EVENT_RECEIVED');
                     }
 
-                    // Procesamiento normal
+                    // Procesamiento normal de mensajes
                     if (this._isConversationStart(change)) {
                         await this._handleNewUserWelcome(message.from, change.value);
                         results.processed++;
@@ -147,7 +148,8 @@ const webhookController = {
             logInfo('Iniciando proceso de documento legal', { 
                 email, 
                 whatsappId: conversation.whatsappId,
-                category: conversation.category 
+                category: conversation.category,
+                timestamp: new Date().toISOString()
             });
 
             await conversationService.updateConversationMetadata(
@@ -231,6 +233,7 @@ const webhookController = {
                 return {};
         }
     },
+
     _isConversationStart(change) {
         return (
             change.field === "messages" &&
