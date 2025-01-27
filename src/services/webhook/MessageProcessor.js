@@ -31,6 +31,10 @@ class MessageProcessor {
       );
   }
 
+  _isValidEmail(email) {
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  }
+
   async processMessage(message, context) {
     try {
         const conversation = await this.conversationService.getConversation(message.from);
@@ -43,7 +47,7 @@ class MessageProcessor {
 
   async _processNormalMessage(message, conversation, context) {
       try {
-          // Verificar si el usuario está solicitando el documento explícitamente
+          // Check for document request first
           if (message.text?.body && message.text.body.toLowerCase().includes("juli quiero el documento")) {
               logInfo('Usuario solicitó documento explícitamente', {
                   whatsappId: conversation.whatsappId,
@@ -64,6 +68,21 @@ class MessageProcessor {
               );
 
               return { success: true, messageProcessed: true };
+          }
+
+          // Check for email if awaiting one
+          if (message.type === 'text' && conversation?.metadata?.awaitingEmail) {
+              const email = message.text.body.trim();
+              if (this._isValidEmail(email)) {
+                  await this._handleEmailSubmission(message, conversation, context);
+                  return { success: true, messageProcessed: true };
+              } else {
+                  await this.whatsappService.sendTextMessage(
+                      conversation.whatsappId,
+                      "El correo electrónico no es válido. Por favor, ingresa un correo válido."
+                  );
+                  return { success: true, messageProcessed: true };
+              }
           }
 
           if (conversation.shouldClassify()) {
@@ -100,6 +119,70 @@ class MessageProcessor {
           return { success: true, messageProcessed: true };
       } catch (error) {
           logError('Error processing normal message', { error });
+          throw error;
+      }
+  }
+
+  async _handleEmailSubmission(message, conversation, context) {
+      const email = message.text.body.trim();
+      
+      try {
+          logInfo('Iniciando proceso de documento legal', { 
+              email, 
+              whatsappId: conversation.whatsappId,
+              category: conversation.category 
+          });
+
+          await this.conversationService.updateConversationMetadata(
+              conversation.whatsappId,
+              { 
+                  email: email,
+                  awaitingEmail: false,
+                  processingDocument: true
+              }
+          );
+
+          await this.whatsappService.sendTextMessage(
+              conversation.whatsappId,
+              "Estamos procesando tu solicitud para generar el documento legal..."
+          );
+
+          const customerData = {
+              name: context.contacts?.[0]?.profile?.name || 'Usuario',
+              documentNumber: conversation.metadata?.documentNumber,
+              email: email,
+              phone: message.from,
+              address: conversation.metadata?.address || "No especificado"
+          };
+
+          const result = await this.legalAgentSystem.processComplaint(
+              conversation.category,
+              conversation.getMessages(),
+              customerData
+          );
+
+          await this.documentService.generateDocument(
+              conversation.category,
+              result,
+              customerData
+          );
+
+          await this.whatsappService.sendTextMessage(
+              conversation.whatsappId,
+              "¡Tu documento ha sido generado y enviado a tu correo electrónico!"
+          );
+
+          await this.conversationService.updateConversationMetadata(
+              conversation.whatsappId,
+              { processingDocument: false }
+          );
+
+      } catch (error) {
+          logError('Error en procesamiento de documento', { error });
+          await this.whatsappService.sendTextMessage(
+              conversation.whatsappId,
+              "Lo siento, hubo un error procesando tu solicitud. Por favor, intenta nuevamente."
+          );
           throw error;
       }
   }
@@ -153,7 +236,6 @@ class MessageProcessor {
               json: () => {}
           });
 
-          // Log para debugging de respuestas de Chatbase
           logInfo('Chatbase response received', {
               category,
               responseText: response?.text,
