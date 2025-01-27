@@ -10,52 +10,7 @@ class MessageProcessor {
       this.wsManager = wsManager;
       this.legalAgentSystem = legalAgentSystem;
       this.documentService = documentService;
-
-      // Patrones que indican solicitud de documento o correo
-      this.emailRequestPatterns = [
-          "juli quiero el documento",
-          "necesito tu correo electrónico",
-          "por favor proporciona tu correo",
-          "indica tu correo electrónico",
-          "enviaremos el documento a tu correo",
-          "necesitamos tu email"
-      ];
-  }
-
-  isDocumentRequest(message) {
-      if (!message || typeof message !== 'string') return false;
-      
-      const normalizedMessage = message.toLowerCase();
-      const isRequest = normalizedMessage.includes('juli quiero el documento');
-      
-      logInfo('Document request check', {
-          originalMessage: message,
-          normalizedMessage: normalizedMessage,
-          isRequest: isRequest
-      });
-      
-      return isRequest;
-  }
-
-  isRequestingEmail(message) {
-      if (!message || typeof message !== 'string') return false;
-      
-      const normalizedMessage = message.toLowerCase();
-      for (const pattern of this.emailRequestPatterns) {
-          if (pattern !== 'juli quiero el documento' && normalizedMessage.includes(pattern.toLowerCase())) {
-              logInfo('Email request pattern matched', {
-                  originalMessage: message,
-                  normalizedMessage: normalizedMessage,
-                  matchedPattern: pattern
-              });
-              return true;
-          }
-      }
-      return false;
-  }
-
-  _isValidEmail(email) {
-      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+      this.documentRequestKey = "juli quiero el documento";
   }
 
   async processMessage(message, context) {
@@ -70,51 +25,43 @@ class MessageProcessor {
 
   async _processNormalMessage(message, conversation, context) {
       try {
-          // Log inicial de procesamiento
-          logInfo('Processing message details', {
-              type: message.type,
-              content: message.text?.body,
+          // Log inicial detallado
+          const originalMessage = message.text?.body || '';
+          const normalizedMessage = originalMessage.toLowerCase();
+
+          logInfo('Message processing started', {
+              originalMessage,
+              normalizedMessage,
+              messageType: message.type,
               awaitingEmail: conversation?.metadata?.awaitingEmail,
-              category: conversation?.category,
-              messageText: message.text?.body?.toLowerCase() || ''
+              category: conversation?.category
           });
 
-          // Verificar solicitud de documento
-          if (message.text?.body) {
-              const messageText = message.text.body.toLowerCase();
-              const isDocumentRequest = messageText.includes("juli quiero el documento");
-              
-              logInfo('Document request check', {
-                  originalMessage: message.text.body,
-                  normalizedMessage: messageText,
-                  isDocumentRequest: isDocumentRequest,
-                  patterns: this.emailRequestPatterns
+          // Check for document request first
+          if (message.type === 'text' && normalizedMessage === this.documentRequestKey) {
+              logInfo('Document request detected', {
+                  originalMessage,
+                  normalizedMessage,
+                  matched: true
               });
 
-              if (isDocumentRequest) {
-                  logInfo('Document request detected', {
-                      whatsappId: conversation.whatsappId,
-                      category: conversation.category
-                  });
+              await this.conversationService.updateConversationMetadata(
+                  conversation.whatsappId,
+                  { 
+                      awaitingEmail: true,
+                      emailRequestTimestamp: new Date().toISOString()
+                  }
+              );
 
-                  await this.conversationService.updateConversationMetadata(
-                      conversation.whatsappId,
-                      { 
-                          awaitingEmail: true,
-                          emailRequestTimestamp: new Date().toISOString()
-                      }
-                  );
+              await this.whatsappService.sendTextMessage(
+                  conversation.whatsappId,
+                  "Por favor, proporciona tu correo electrónico para enviarte el documento de reclamación."
+              );
 
-                  await this.whatsappService.sendTextMessage(
-                      conversation.whatsappId,
-                      "Por favor, proporciona tu correo electrónico para enviarte el documento de reclamación."
-                  );
-
-                  return { success: true, messageProcessed: true };
-              }
+              return { success: true, messageProcessed: true };
           }
 
-          // Verificar si estamos esperando un correo
+          // Check for email if awaiting one
           if (message.type === 'text' && conversation?.metadata?.awaitingEmail) {
               const email = message.text.body.trim();
               if (this._isValidEmail(email)) {
@@ -129,25 +76,10 @@ class MessageProcessor {
               }
           }
 
-          // Flujo normal de procesamiento
+          // Normal message flow
           if (conversation.shouldClassify()) {
               const classification = await this._handleCategoryClassification(message, conversation);
               const chatbaseResponse = await this._forwardToChatbase(message, classification.category);
-              
-              // Verificar si Chatbase está solicitando correo
-              if (this.isRequestingEmail(chatbaseResponse)) {
-                  await this.conversationService.updateConversationMetadata(
-                      conversation.whatsappId,
-                      { 
-                          awaitingEmail: true,
-                          emailRequestTimestamp: new Date().toISOString()
-                      }
-                  );
-                  logInfo('Esperando correo electrónico', { 
-                      whatsappId: conversation.whatsappId,
-                      source: 'chatbase_response'
-                  });
-              }
           }
 
           const formattedMessage = this.formatMessage(message, context);
@@ -168,11 +100,15 @@ class MessageProcessor {
       }
   }
 
+  _isValidEmail(email) {
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  }
+
   async _handleEmailSubmission(message, conversation, context) {
       const email = message.text.body.trim();
       
       try {
-          logInfo('Iniciando proceso de documento legal', { 
+          logInfo('Starting document generation process', { 
               email, 
               whatsappId: conversation.whatsappId,
               category: conversation.category 
@@ -223,7 +159,7 @@ class MessageProcessor {
           );
 
       } catch (error) {
-          logError('Error en procesamiento de documento', { error });
+          logError('Error processing document', { error });
           await this.whatsappService.sendTextMessage(
               conversation.whatsappId,
               "Lo siento, hubo un error procesando tu solicitud. Por favor, intenta nuevamente."
@@ -281,10 +217,9 @@ class MessageProcessor {
               json: () => {}
           });
 
-          logInfo('Chatbase response received', {
+          logInfo('Chatbase response received', { 
               category,
-              responseText: response?.text,
-              isRequestingEmail: this.isRequestingEmail(response?.text)
+              responseText: response?.text
           });
 
           return response?.text || '';
