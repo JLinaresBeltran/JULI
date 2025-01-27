@@ -28,6 +28,15 @@ class MessageProcessor {
                 category: conversation?.category
             });
 
+            // Verificar trigger de documento ANTES de cualquier otro procesamiento
+            if (message.type === 'text' && normalizedMessage === this.documentRequestKey) {
+                logInfo('Document request trigger detected', {
+                    originalMessage,
+                    normalizedMessage
+                });
+                return await this._handleDocumentRequest(message, conversation);
+            }
+
             // Si el mensaje es el trigger de documento
             if (message.type === 'text' && normalizedMessage === this.documentRequestKey) {
                 logInfo('Document request detected', {
@@ -62,8 +71,13 @@ class MessageProcessor {
 
     async _handleDocumentRequest(message, conversation) {
         try {
+            logInfo('Processing document request', {
+                whatsappId: conversation.whatsappId,
+                category: conversation.category
+            });
+
             // Verificar si ya hay una categoría asignada
-            if (!conversation.category) {
+            if (!conversation.category || conversation.category === 'unknown') {
                 await this.whatsappService.sendTextMessage(
                     conversation.whatsappId,
                     "Por favor, cuéntame primero tu caso para poder ayudarte con el documento adecuado."
