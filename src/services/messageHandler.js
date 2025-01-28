@@ -8,7 +8,7 @@ class DocumentRequestHandler {
         this.legalAgentSystem = legalAgentSystem;
         this.documentService = documentService;
         
-        // Triggers for document generation
+        // Triggers para la generación de documentos
         this.DOCUMENT_TRIGGERS = [
             "juli quiero el documento",
             "quiero el documento",
@@ -22,195 +22,155 @@ class DocumentRequestHandler {
     isDocumentRequest(message) {
         if (message.type !== 'text') return false;
         const normalizedText = message.text.body.toLowerCase().trim();
-        return this.DOCUMENT_TRIGGERS.some(trigger => normalizedText.includes(trigger));
+        return this.DOCUMENT_TRIGGERS.some(trigger => 
+            normalizedText.includes(trigger.toLowerCase())
+        );
     }
 
     async handleDocumentRequest(message, conversation, context) {
         try {
-            logInfo('Starting document request process', {
-                whatsappId: message.from,
-                conversationId: conversation?.whatsappId,
-                category: conversation?.category || conversation?.metadata?.category
-            });
-
-            // 1. Validate conversation and category
+            // 1. Validar que tengamos una categoría válida
             if (!this._validateConversationForDocument(conversation)) {
                 await this._sendInvalidConversationMessage(message.from);
                 return { success: false, reason: 'INVALID_CONVERSATION' };
             }
 
-            // 2. Get customer data
-            const customerData = this._prepareCustomerData(conversation, context);
-            
-            // 3. Process complaint and generate document
-            const documentResult = await this._generateDocument(conversation, customerData);
-            if (!documentResult.success) {
-                return documentResult;
+            // 2. Verificar si estamos esperando un email
+            if (conversation.metadata?.awaitingEmail) {
+                return this._handleEmailSubmission(message, conversation);
             }
 
-            // 4. Send document to user
-            await this._sendDocumentToUser(message.from, documentResult.document);
+            // 3. Si no tenemos email, solicitarlo
+            if (!conversation.metadata?.email) {
+                await this.conversationService.updateConversationMetadata(
+                    conversation.whatsappId,
+                    {
+                        awaitingEmail: true,
+                        documentRequestPending: true
+                    }
+                );
 
-            // 5. Update conversation metadata
-            await this._updateConversationMetadata(conversation, documentResult);
+                await this.whatsappService.sendTextMessage(
+                    message.from,
+                    "Por favor, proporciona tu correo electrónico para enviarte el documento de reclamación."
+                );
 
-            return { success: true, type: 'DOCUMENT_GENERATED' };
+                return { success: true, type: 'EMAIL_REQUESTED' };
+            }
+
+            // 4. Si tenemos email, proceder con la generación
+            return await this._processDocumentGeneration(conversation);
 
         } catch (error) {
-            logError('Error in document request handler', {
-                error: error.message,
-                whatsappId: message.from,
-                stack: error.stack
-            });
-            
+            console.error('Error en document request handler:', error);
             await this._sendErrorMessage(message.from);
-            return { success: false, reason: 'PROCESSING_ERROR', error };
+            throw error;
         }
     }
 
-    async _validateConversationForDocument(conversation) {
+    _validateConversationForDocument(conversation) {
         if (!conversation) return false;
-
-        // Intentar obtener la categoría de todas las fuentes posibles
-        let category = conversation.category || 
-                      conversation?.metadata?.category ||
-                      conversation?.metadata?.documentType;
-
-        logInfo('Validating conversation for document', {
-            whatsappId: conversation.whatsappId,
-            hasCategory: !!category,
-            categoryValue: category,
-            metadataCategory: conversation?.metadata?.category,
-            conversationCategory: conversation?.category,
-            documentType: conversation?.metadata?.documentType
-        });
-
-        // Si no hay categoría, intentar reclasificar usando el último mensaje
-        if (!category || category === 'unknown') {
-            const messages = conversation.getMessages();
-            if (messages && messages.length > 0) {
-                const lastMessage = messages[messages.length - 1];
-                if (lastMessage.text?.body) {
-                    logInfo('Attempting to reclassify conversation', {
-                        whatsappId: conversation.whatsappId,
-                        lastMessage: lastMessage.text.body
-                    });
-                    
-                    const classificationResult = await this.conversationService.classifyMessage(lastMessage);
-                    category = classificationResult.category;
-                    
-                    if (category && category !== 'unknown') {
-                        await this.conversationService.updateConversationMetadata(
-                            conversation.whatsappId,
-                            {
-                                category: category,
-                                classificationConfidence: classificationResult.confidence,
-                                lastClassificationTimestamp: new Date().toISOString()
-                            }
-                        );
-                    }
-                }
-            }
-        }
-
+        const category = conversation.category || conversation.metadata?.category;
         return category && category !== 'unknown';
     }
 
-    async _generateDocument(conversation, customerData) {
-        const category = conversation.category || conversation.metadata?.category;
-        const messages = conversation.getMessages();
-
-        if (!messages || messages.length === 0) {
-            return { success: false, reason: 'NO_MESSAGES' };
+    async _handleEmailSubmission(message, conversation) {
+        const email = message.text.body.trim();
+        
+        if (!this._isValidEmail(email)) {
+            await this.whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "El correo electrónico no es válido. Por favor, ingresa un correo válido."
+            );
+            return { success: true, type: 'INVALID_EMAIL' };
         }
 
+        return await this._processDocumentGeneration(conversation, email);
+    }
+
+    async _processDocumentGeneration(conversation, email = null) {
+        const category = conversation.category || conversation.metadata?.category;
+        const customerData = this._prepareCustomerData(conversation, email);
+
         try {
+            // Generar el documento
             const result = await this.legalAgentSystem.processComplaint(
                 category,
-                messages,
+                conversation.getMessages(),
                 customerData
             );
 
-            if (!result || !result.hechos || !result.peticion) {
-                return { success: false, reason: 'INVALID_DOCUMENT_CONTENT' };
-            }
-
-            return { success: true, document: result };
-
-        } catch (error) {
-            logError('Error generating document', {
-                error: error.message,
+            await this.documentService.generateDocument(
                 category,
-                whatsappId: conversation.whatsappId
-            });
-            return { success: false, reason: 'GENERATION_ERROR', error };
+                result,
+                customerData
+            );
+
+            // Actualizar metadata de la conversación
+            await this.conversationService.updateConversationMetadata(
+                conversation.whatsappId,
+                {
+                    documentGenerated: true,
+                    documentGeneratedTimestamp: new Date().toISOString(),
+                    email: email || conversation.metadata?.email,
+                    awaitingEmail: false,
+                    documentRequestPending: false
+                }
+            );
+
+            // Notificar al usuario
+            await this.whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "¡Tu documento ha sido generado y enviado a tu correo electrónico!"
+            );
+
+            return { success: true, type: 'DOCUMENT_GENERATED' };
+        } catch (error) {
+            console.error('Error generando documento:', error);
+            throw error;
         }
     }
 
-    _prepareCustomerData(conversation, context) {
-        const category = conversation.category || conversation.metadata?.category;
-        
+    _isValidEmail(email) {
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+    }
+
+    _prepareCustomerData(conversation, email = null) {
         return {
-            name: context.contacts?.[0]?.profile?.name || 'Usuario',
+            name: conversation.metadata?.customerName || 'Usuario',
             documentNumber: conversation.metadata?.documentNumber,
-            email: conversation.metadata?.email,
+            email: email || conversation.metadata?.email,
             phone: conversation.whatsappId,
             address: conversation.metadata?.address || 'No especificado',
-            ...this._getServiceSpecificData(category, conversation.metadata)
+            ...this._getServiceSpecificData(conversation)
         };
     }
 
-    _getServiceSpecificData(category, metadata = {}) {
-        const specificDataMap = {
+    _getServiceSpecificData(conversation) {
+        const metadata = conversation.metadata || {};
+        const category = conversation.category || metadata.category;
+
+        const dataMap = {
             'servicios_publicos': {
-                cuenta_contrato: metadata?.accountNumber,
-                tipo_servicio: metadata?.serviceType,
-                periodo_facturacion: metadata?.billingPeriod
+                cuenta_contrato: metadata.accountNumber,
+                tipo_servicio: metadata.serviceType,
+                periodo_facturacion: metadata.billingPeriod
             },
             'telecomunicaciones': {
-                numero_linea: metadata?.lineNumber,
-                plan_contratado: metadata?.plan,
-                fecha_contratacion: metadata?.contractDate
+                numero_linea: metadata.lineNumber,
+                plan_contratado: metadata.plan,
+                fecha_contratacion: metadata.contractDate
             },
             'transporte_aereo': {
-                numero_reserva: metadata?.reservationNumber,
-                numero_vuelo: metadata?.flightNumber,
-                fecha_vuelo: metadata?.flightDate,
-                ruta: metadata?.route,
-                valor_tiquete: metadata?.ticketValue
+                numero_reserva: metadata.reservationNumber,
+                numero_vuelo: metadata.flightNumber,
+                fecha_vuelo: metadata.flightDate,
+                ruta: metadata.route,
+                valor_tiquete: metadata.ticketValue
             }
         };
 
-        return specificDataMap[category] || {};
-    }
-
-    async _sendDocumentToUser(whatsappId, document) {
-        const formattedDocument = this._formatDocumentForWhatsApp(document);
-        await this.whatsappService.sendTextMessage(whatsappId, formattedDocument);
-    }
-
-    _formatDocumentForWhatsApp(document) {
-        return `📄 *DOCUMENTO DE RECLAMACIÓN*\n\n` +
-               `*PARA:* ${document.companyName}\n` +
-               `*DE:* ${document.customerName}\n` +
-               `*ASUNTO:* ${document.reference}\n\n` +
-               `*HECHOS:*\n${document.hechos.map((hecho, index) => 
-                   `${index + 1}. ${hecho}`).join('\n')}\n\n` +
-               `*PETICIÓN:*\n${document.peticion}\n\n` +
-               `_Documento generado por JULI - Asistente Legal Virtual_\n` +
-               `_Fecha: ${new Date().toLocaleDateString('es-CO')}_`;
-    }
-
-    async _updateConversationMetadata(conversation, documentResult) {
-        await this.conversationService.updateConversationMetadata(
-            conversation.whatsappId,
-            {
-                documentGenerated: true,
-                documentGeneratedTimestamp: new Date().toISOString(),
-                documentType: conversation.category || conversation.metadata?.category,
-                lastDocumentData: documentResult.document
-            }
-        );
+        return dataMap[category] || {};
     }
 
     async _sendInvalidConversationMessage(whatsappId) {
