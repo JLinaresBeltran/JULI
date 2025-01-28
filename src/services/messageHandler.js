@@ -57,13 +57,16 @@ class MessageHandler {
     }
 
     async _handleDocumentRequest(message, conversation, context) {
+        const category = conversation?.metadata?.category;
+        
         logInfo('Processing document request', {
             whatsappId: message.from,
-            category: conversation?.metadata?.category
+            category: category,
+            hasMetadata: !!conversation?.metadata,
+            metadata: conversation?.metadata // Añadir todo el objeto metadata para debug
         });
-
+    
         // Verificar que haya una categoría válida
-        const category = conversation?.metadata?.category;
         if (!category || category === 'unknown') {
             await this.whatsappService.sendTextMessage(
                 message.from,
@@ -71,37 +74,48 @@ class MessageHandler {
             );
             return { success: true, type: 'DOCUMENT_REQUEST_REJECTED' };
         }
-
+    
         try {
             // Preparar datos del cliente
             const customerData = this._prepareCustomerData(conversation, context);
-
+            
+            logInfo('Customer data prepared', {
+                whatsappId: message.from,
+                category: category,
+                customerData: customerData // Log de los datos preparados
+            });
+    
             // Obtener los mensajes de la conversación
-            const messages = conversation.getMessages().map(msg => {
-                return {
-                    content: msg.text?.body || msg.content,
-                    timestamp: msg.timestamp,
-                    direction: msg.direction
-                };
-            }).filter(msg => msg.content);
-
-            logInfo('Generando documento con LegalAgentSystem', {
+            const messages = conversation.getMessages().map(msg => ({
+                content: msg.text?.body || msg.content,
+                timestamp: msg.timestamp,
+                direction: msg.direction
+            })).filter(msg => msg.content);
+    
+            logInfo('Processing complaint with LegalAgentSystem', {
                 category,
                 whatsappId: message.from,
-                messagesCount: messages.length
+                messagesCount: messages.length,
+                messages: messages // Log de los mensajes
             });
-
+    
             // Procesar la queja
             const documentResult = await this.legalAgentSystem.processComplaint(
                 category,
                 messages,
                 customerData
             );
-
+    
+            logInfo('Document generated', {
+                whatsappId: message.from,
+                category,
+                hasResult: !!documentResult
+            });
+    
             // Formatear y enviar el documento
             const formattedDocument = this._formatDocumentForWhatsApp(documentResult);
             await this.whatsappService.sendTextMessage(message.from, formattedDocument);
-
+    
             // Actualizar metadata de la conversación
             await this.conversationService.updateConversationMetadata(
                 conversation.whatsappId,
@@ -111,27 +125,22 @@ class MessageHandler {
                     documentType: category
                 }
             );
-
-            logInfo('Document generated and sent successfully', {
-                whatsappId: message.from,
-                category,
-                documentType: category
-            });
-
+    
             return { success: true, type: 'DOCUMENT_GENERATED' };
-
+    
         } catch (error) {
             logError('Error generating document', {
                 error: error.message,
                 whatsappId: message.from,
-                category: category
+                category: category,
+                errorStack: error.stack // Añadir stack trace para mejor debugging
             });
-
+    
             await this.whatsappService.sendTextMessage(
                 message.from,
                 "Lo siento, hubo un problema al generar el documento. Por favor, intenta nuevamente o proporciona más detalles sobre tu caso."
             );
-
+    
             return { success: false, type: 'DOCUMENT_GENERATION_FAILED' };
         }
     }
