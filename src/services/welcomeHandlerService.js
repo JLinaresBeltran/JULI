@@ -4,7 +4,6 @@ const { logInfo, logError } = require('../utils/logger');
 class WelcomeHandlerService {
     async handleInitialInteraction(userId, userName, context = {}) {
         try {
-            // Logging mejorado para debugging
             logInfo('Starting initial interaction', {
                 userId,
                 userName,
@@ -16,14 +15,11 @@ class WelcomeHandlerService {
                 }
             });
 
-            const welcomeMessage = {
-                type: 'text',
-                text: { 
-                    body: this.getWelcomeMessage(userName)
-                }
-            };
+            // Obtener solo el texto del mensaje
+            const messageText = this.getWelcomeMessage(userName);
 
-            const response = await whatsappService.sendMessage(userId, welcomeMessage);
+            // Enviar solo el texto al servicio de WhatsApp
+            const response = await whatsappService.sendMessage(userId, messageText);
             
             if (!response?.messages?.[0]?.id) {
                 throw new Error('No message ID received from WhatsApp');
@@ -38,7 +34,10 @@ class WelcomeHandlerService {
 
             return {
                 success: true,
-                message: welcomeMessage,
+                message: {
+                    type: 'text',
+                    text: { body: messageText }
+                },
                 messageId: response.messages[0].id,
                 metadata: {
                     userId,
