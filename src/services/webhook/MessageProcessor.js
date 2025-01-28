@@ -17,6 +17,10 @@ class MessageProcessor {
         try {
             const conversation = await this.conversationService.getConversation(message.from);
             
+            if (!conversation) {
+                throw new Error('No existe una conversación activa');
+            }
+
             // Solo procesar mensajes de texto
             if (message.type !== 'text') {
                 return await this._processNormalMessage(message, conversation, context);
@@ -49,12 +53,85 @@ class MessageProcessor {
                 return await this._handleEmailSubmission(message, conversation, context);
             }
 
-            // Procesar como mensaje normal
-            return await this._processNormalMessage(message, conversation, context);
+            // Procesar mensaje normal
+            const result = await this._processNormalMessage(message, conversation, context);
+
+            // Marcar como leído si es texto o audio
+            if (message.type === 'text' || message.type === 'audio') {
+                await this.whatsappService.markAsRead(message.id);
+            }
+
+            return result;
 
         } catch (error) {
             logError('Message processing error', { error });
             await this._sendErrorMessage(message.from);
+            throw error;
+        }
+    }
+
+    async _processNormalMessage(message, conversation, context) {
+        try {
+            if (conversation.shouldClassify()) {
+                logInfo('Clasificando consulta', {
+                    text: message.text?.body
+                });
+
+                const classification = await this._processClassification(message, conversation);
+                
+                if (classification.category !== 'unknown') {
+                    await this._handleChatbaseResponse(message, classification.category, conversation);
+                }
+            } else if (conversation.category && conversation.category !== 'unknown') {
+                logInfo('Usando categoría existente', {
+                    category: conversation.category
+                });
+                await this._handleChatbaseResponse(message, conversation.category, conversation);
+            }
+
+            // Agregar mensaje a la conversación
+            if (conversation.addMessage(message)) {
+                const formattedMessage = this._formatMessage(message, context);
+                await this.conversationService.processIncomingMessage(formattedMessage);
+
+                if (this.wsManager) {
+                    this.wsManager.broadcastConversationUpdate(conversation);
+                }
+            }
+
+            return { success: true, messageProcessed: true };
+        } catch (error) {
+            logError('Error in normal message processing', { error });
+            throw error;
+        }
+    }
+
+    async _processClassification(message, conversation) {
+        try {
+            const classification = await queryClassifierService.classifyQuery(message.text.body);
+            logInfo('Resultado de clasificación', classification);
+
+            await this.conversationService.updateConversationMetadata(
+                conversation.whatsappId,
+                {
+                    category: classification.category,
+                    classificationConfidence: classification.confidence
+                }
+            );
+
+            if (classification.category !== 'unknown') {
+                await this._sendCategoryConfirmation(
+                    conversation.whatsappId,
+                    classification.category
+                );
+            }
+
+            return classification;
+        } catch (error) {
+            logError('Error en clasificación', {
+                error: error.message,
+                messageId: message.id
+            });
             throw error;
         }
     }
@@ -180,70 +257,6 @@ class MessageProcessor {
         }
     }
 
-    async _processNormalMessage(message, conversation, context) {
-        try {
-            if (conversation.shouldClassify()) {
-                logInfo('Clasificando consulta', {
-                    text: message.text?.body
-                });
-
-                const classification = await this._handleCategoryClassification(message, conversation);
-                
-                if (classification.category !== 'unknown') {
-                    await this._handleChatbaseResponse(message, classification.category, conversation);
-                }
-            } else if (conversation.category && conversation.category !== 'unknown') {
-                logInfo('Usando categoría existente', {
-                    category: conversation.category
-                });
-                await this._handleChatbaseResponse(message, conversation.category, conversation);
-            }
-
-            const formattedMessage = this.formatMessage(message, context);
-            await this.conversationService.processIncomingMessage(formattedMessage);
-
-            if (message.type === 'text' || message.type === 'audio') {
-                await this.whatsappService.markAsRead(message.id);
-            }
-
-            if (this.wsManager) {
-                this.wsManager.broadcastConversationUpdate(conversation);
-            }
-
-            return { success: true, messageProcessed: true };
-        } catch (error) {
-            logError('Error in normal message processing', { error });
-            throw error;
-        }
-    }
-
-    async _handleCategoryClassification(message, conversation) {
-        try {
-            const classification = await queryClassifierService.classifyQuery(message.text.body);
-            logInfo('Resultado de clasificación', classification);
-
-            await this.conversationService.updateConversationMetadata(
-                conversation.whatsappId,
-                {
-                    category: classification.category,
-                    classificationConfidence: classification.confidence
-                }
-            );
-
-            if (classification.category !== 'unknown') {
-                await this._sendCategoryConfirmation(
-                    conversation.whatsappId,
-                    classification.category
-                );
-            }
-
-            return classification;
-        } catch (error) {
-            logError('Error in category classification', { error });
-            throw error;
-        }
-    }
-
     async _handleChatbaseResponse(message, category, conversation) {
         try {
             logInfo('Solicitando respuesta a Chatbase', {
@@ -328,7 +341,7 @@ class MessageProcessor {
         }
     }
 
-    formatMessage(message, context = {}) {
+    _formatMessage(message, context = {}) {
         return {
             id: message.id,
             from: message.from,
