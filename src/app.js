@@ -7,6 +7,7 @@ const WebSocket = require('ws');
 const routes = require('./routes');
 const conversationService = require('./services/conversationService');
 const WebSocketManager = require('./services/websocketService');
+const webhookController = require('./controllers/webhookController');
 const { logInfo, logError } = require('./utils/logger');
 
 dotenv.config();
@@ -104,9 +105,11 @@ wss.on('connection', (ws, req) => {
     });
 });
 
+// Middleware setup
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
+// CORS configuration
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
@@ -114,8 +117,10 @@ app.use((req, res, next) => {
     next();
 });
 
+// Static files
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Routes
 app.get('/', (req, res) => {
     res.status(200).send('¡Bienvenido a la API de JULI! El servidor está funcionando.');
 });
@@ -123,6 +128,9 @@ app.get('/', (req, res) => {
 app.get('/monitor', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'conversations.html'));
 });
+
+// Webhook integration
+app.post('/webhook', webhookController.receiveMessage.bind(webhookController));
 
 app.get('/api/debug/ws-status', (req, res) => {
     res.json({
@@ -147,8 +155,10 @@ app.get('/api/debug/ws-status', (req, res) => {
     });
 });
 
+// API routes
 app.use('/api', routes);
 
+// Health check endpoint
 app.get('/health', (req, res) => {
     res.status(200).json({ 
         status: 'healthy',
@@ -160,6 +170,7 @@ app.get('/health', (req, res) => {
     });
 });
 
+// Error handling middleware
 app.use((err, req, res, next) => {
     logError('Error interno', {
         error: err.message,
@@ -173,6 +184,7 @@ app.use((err, req, res, next) => {
     });
 });
 
+// 404 handler
 app.use((req, res) => {
     res.status(404).json({
         error: 'Ruta no encontrada',
@@ -180,6 +192,7 @@ app.use((req, res) => {
     });
 });
 
+// Graceful shutdown
 process.on('SIGTERM', () => {
     logInfo('Iniciando apagado graceful');
     
