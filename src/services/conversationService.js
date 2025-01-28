@@ -6,6 +6,10 @@ const {
 } = require('./conversation');
 const { logError, logInfo } = require('../utils/logger');
 const whatsappService = require('./whatsappService');
+const queryClassifierService = require('./queryClassifierService');
+const chatbaseController = require('../controllers/chatbaseController');
+const legalAgentSystem = require('./legalAgents');
+const documentService = require('./documentService');
 
 class ConversationService extends ConversationEvents {
     constructor() {
@@ -15,7 +19,15 @@ class ConversationService extends ConversationEvents {
         // Configuración explícita
         this.config = {
             maintenanceInterval: 30 * 1000,    // 30 segundos para revisar
-            timeoutDuration: 60 * 1000         // 1 minuto para timeout
+            timeoutDuration: 60 * 1000,        // 1 minuto para timeout
+            documentTriggers: [
+                "juli quiero el documento",
+                "quiero el documento",
+                "necesito el documento",
+                "generar documento",
+                "genera el documento",
+                "documento por favor"
+            ]
         };
 
         this.setupHandlers();
@@ -23,12 +35,10 @@ class ConversationService extends ConversationEvents {
     }
 
     startMaintenanceInterval() {
-        // Limpiar intervalo existente si hay uno
         if (this._maintenanceInterval) {
             clearInterval(this._maintenanceInterval);
         }
 
-        // Iniciar nuevo intervalo
         this._maintenanceInterval = setInterval(() => {
             this.cleanupInactiveConversations();
         }, this.config.maintenanceInterval);
@@ -45,7 +55,6 @@ class ConversationService extends ConversationEvents {
         const conversations = this.manager.getAll();
 
         logInfo('Iniciando revisión de conversaciones inactivas', {
-            totalConversations: conversations.length,
             currentTime: new Date(now).toISOString(),
             timeoutThreshold: Math.floor(this.config.timeoutDuration / 1000) + ' segundos'
         });
@@ -61,50 +70,14 @@ class ConversationService extends ConversationEvents {
             });
 
             if (inactiveTime > this.config.timeoutDuration) {
-                logInfo('Conversación inactiva detectada', {
-                    whatsappId: conversation.whatsappId,
-                    inactiveFor: Math.floor(inactiveTime / 1000) + ' segundos',
-                    lastMessageTime: new Date(lastMessageTime).toISOString()
-                });
-
-                // Reiniciar chat en Chatbase si hay una categoría activa
-                if (conversation.category && conversation.category !== 'unknown') {
-                    try {
-                        const chatbaseClient = require('../integrations/chatbaseClient');
-                        await chatbaseClient.resetChat(conversation.category);
-                        
-                        logInfo('Chat de Chatbase reiniciado', {
-                            whatsappId: conversation.whatsappId,
-                            category: conversation.category
-                        });
-                    } catch (error) {
-                        logError('Error reiniciando chat en Chatbase', {
-                            error: error.message,
-                            whatsappId: conversation.whatsappId
-                        });
-                    }
-                }
-
                 await this.closeConversation(conversation.whatsappId);
                 inactiveCount++;
             }
         }
 
         logInfo('Limpieza de conversaciones completada', {
-            checkedCount: conversations.length,
-            removedCount: inactiveCount,
-            remainingCount: this.getActiveConversationCount(),
             timestamp: new Date().toISOString()
         });
-    }
-
-    _getLastMessageTime(conversation) {
-        if (!conversation.messages || conversation.messages.length === 0) {
-            return conversation.createdAt?.getTime() || Date.now();
-        }
-        
-        const lastMessage = conversation.messages[conversation.messages.length - 1];
-        return new Date(lastMessage.timestamp).getTime();
     }
 
     setupHandlers() {
@@ -115,7 +88,7 @@ class ConversationService extends ConversationEvents {
     }
 
     handleMessageReceived({conversationId, message}) {
-        logInfo('Mensaje recibido', { conversationId, messageId: message.id });
+        logInfo('Mensaje recibido', { conversationId });
     }
 
     handleConversationUpdated(conversation) {
@@ -155,64 +128,18 @@ class ConversationService extends ConversationEvents {
             if (!conversation) {
                 throw new Error('No existe una conversación activa');
             }
+
+            // Verificar si es una solicitud de documento
+            if (message.type === 'text' && this._isDocumentRequest(message.text.body)) {
+                return await this._handleDocumentRequest(message, conversation);
+            }
     
-            // Procesar mensaje de texto
+            // Procesar mensaje de texto normal
             if (message.type === 'text' && message.text?.body) {
-                // Solo procesar clasificación si no es el primer mensaje
-                if (!options.skipClassification && conversation.isAwaitingClassification()) {
-                    try {
-                        const queryClassifierService = require('./queryClassifierService');
-                        const chatbaseController = require('../controllers/chatbaseController');
-                        
-                        logInfo('Clasificando consulta', {
-                            text: message.text.body
-                        });
-    
-                        // Clasificar el mensaje
-                        const classification = queryClassifierService.classifyQuery(message.text.body);
-                        
-                        logInfo('Resultado de clasificación', {
-                            category: classification.category,
-                            confidence: classification.confidence,
-                            scores: classification.scores
-                        });
-    
-                        // Actualizar metadata
-                        await this.updateConversationMetadata(conversation.whatsappId, {
-                            category: classification.category,
-                            classificationConfidence: classification.confidence
-                        });
-    
-                        // Procesar con Chatbase según la categoría
-                        const handlers = {
-                            servicios_publicos: chatbaseController.handleServiciosPublicos,
-                            telecomunicaciones: chatbaseController.handleTelecomunicaciones,
-                            transporte_aereo: chatbaseController.handleTransporteAereo
-                        };
-    
-                        const handler = handlers[classification.category];
-                        if (handler) {
-                            const chatbaseResponse = await handler(message.text.body);
-                            if (chatbaseResponse && chatbaseResponse.text) {
-                                await whatsappService.sendTextMessage(
-                                    message.from,
-                                    chatbaseResponse.text
-                                );
-    
-                                logInfo('Respuesta de Chatbase enviada', {
-                                    category: classification.category,
-                                    messageId: message.id,
-                                    responsePreview: chatbaseResponse.text.substring(0, 100)
-                                });
-                            }
-                        }
-                    } catch (error) {
-                        logError('Error en clasificación o procesamiento', {
-                            error: error.message,
-                            messageId: message.id,
-                            stack: error.stack
-                        });
-                    }
+                if (!options.skipClassification && conversation.shouldClassify()) {
+                    await this._processClassification(message, conversation);
+                } else if (conversation.category && conversation.category !== 'unknown') {
+                    await this._processChatbaseResponse(message, conversation);
                 }
             }
     
@@ -234,6 +161,313 @@ class ConversationService extends ConversationEvents {
                 stack: error.stack
             });
             throw error;
+        }
+    }
+
+    async _processClassification(message, conversation) {
+        try {
+            logInfo('Clasificando consulta', {
+                text: message.text.body
+            });
+
+            const classification = await queryClassifierService.classifyQuery(message.text.body);
+            
+            logInfo('Resultado de clasificación', classification);
+
+            await this.updateCategory(
+                conversation.whatsappId,
+                classification.category,
+                classification.confidence
+            );
+
+            if (classification.category !== 'unknown') {
+                await this._processChatbaseResponse(message, conversation);
+            }
+
+        } catch (error) {
+            logError('Error en clasificación', {
+                error: error.message,
+                messageId: message.id
+            });
+            throw error;
+        }
+    }
+
+    async _handleDocumentRequest(message, conversation) {
+        try {
+            logInfo('Starting document request handler', {
+                whatsappId: message.from,
+                category: conversation.category || conversation.metadata?.category
+            });
+
+            // Verificar si tenemos una categoría válida
+            const category = await this._validateAndGetCategory(conversation, message);
+            if (!category) {
+                await whatsappService.sendTextMessage(
+                    message.from,
+                    "Para generar el documento de reclamación, necesito que primero me cuentes tu caso en detalle."
+                );
+                return conversation;
+            }
+
+            // Verificar y solicitar correo si es necesario
+            if (conversation.metadata?.awaitingEmail) {
+                const email = message.text.body.trim();
+                if (this._isValidEmail(email)) {
+                    return await this._processDocumentGeneration(conversation, email);
+                } else {
+                    await whatsappService.sendTextMessage(
+                        message.from,
+                        "El correo electrónico no es válido. Por favor, ingresa un correo válido."
+                    );
+                    return conversation;
+                }
+            }
+
+            if (!conversation.metadata?.email) {
+                await this.updateConversationMetadata(conversation.whatsappId, {
+                    awaitingEmail: true,
+                    documentRequestPending: true
+                });
+
+                await whatsappService.sendTextMessage(
+                    message.from,
+                    "Por favor, proporciona tu correo electrónico para enviarte el documento de reclamación."
+                );
+                return conversation;
+            }
+
+            return await this._processDocumentGeneration(conversation);
+
+        } catch (error) {
+            logError('Error en solicitud de documento', {
+                error: error.message,
+                whatsappId: message.from
+            });
+            await this._sendErrorMessage(message.from);
+            throw error;
+        }
+    }
+
+    async _processDocumentGeneration(conversation, email = null) {
+        try {
+            const category = conversation.category || conversation.metadata?.category;
+            const customerData = this._prepareCustomerData(conversation, email);
+
+            const result = await legalAgentSystem.processComplaint(
+                category,
+                conversation.getMessages(),
+                customerData
+            );
+
+            await documentService.generateDocument(
+                category,
+                result,
+                customerData
+            );
+
+            await this.updateConversationMetadata(conversation.whatsappId, {
+                documentGenerated: true,
+                documentGeneratedTimestamp: new Date().toISOString(),
+                email: email || conversation.metadata?.email,
+                awaitingEmail: false,
+                documentRequestPending: false
+            });
+
+            await whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "¡Tu documento ha sido generado y enviado a tu correo electrónico!"
+            );
+
+            return conversation;
+
+        } catch (error) {
+            logError('Error generando documento', {
+                error: error.message,
+                whatsappId: conversation.whatsappId
+            });
+            throw error;
+        }
+    }
+
+    async _validateAndGetCategory(conversation, message) {
+        const currentCategory = conversation.category || conversation.metadata?.category;
+        
+        if (currentCategory && currentCategory !== 'unknown') {
+            return currentCategory;
+        }
+
+        // Intentar reclasificar usando el último mensaje no relacionado con documentos
+        const messages = conversation.getMessages();
+        const lastContentMessage = messages
+            .reverse()
+            .find(msg => msg.type === 'text' && !this._isDocumentRequest(msg.text?.body));
+
+        if (lastContentMessage) {
+            const classification = await queryClassifierService.classifyQuery(lastContentMessage.text.body);
+            if (classification.category !== 'unknown') {
+                await this.updateCategory(
+                    conversation.whatsappId,
+                    classification.category,
+                    classification.confidence
+                );
+                return classification.category;
+            }
+        }
+
+        return null;
+    }
+
+    _isValidEmail(email) {
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+    }
+
+    async _sendErrorMessage(whatsappId) {
+        try {
+            await whatsappService.sendTextMessage(
+                whatsappId,
+                "Lo siento, hubo un error procesando tu solicitud. Por favor, intenta nuevamente."
+            );
+        } catch (error) {
+            logError('Error sending error message', { error });
+        }
+    }
+
+    async _processChatbaseResponse(message, conversation) {
+        try {
+            const handlers = {
+                servicios_publicos: chatbaseController.handleServiciosPublicos,
+                telecomunicaciones: chatbaseController.handleTelecomunicaciones,
+                transporte_aereo: chatbaseController.handleTransporteAereo
+            };
+
+            const handler = handlers[conversation.category];
+            if (handler) {
+                const response = await handler(message.text.body);
+                if (response?.text) {
+                    await whatsappService.sendTextMessage(
+                        message.from,
+                        response.text
+                    );
+                }
+            }
+        } catch (error) {
+            logError('Error processing Chatbase response', {
+                error: error.message,
+                category: conversation.category,
+                messageId: message.id
+            });
+        }
+    }
+
+    _isDocumentRequest(text) {
+        if (!text) return false;
+        const normalizedText = text.toLowerCase().trim();
+        return this.config.documentTriggers.some(trigger => 
+            normalizedText.includes(trigger.toLowerCase())
+        );
+    }
+
+    _prepareCustomerData(conversation, email = null) {
+        return {
+            name: conversation.metadata?.customerName || 'Usuario',
+            documentNumber: conversation.metadata?.documentNumber,
+            email: email || conversation.metadata?.email,
+            phone: conversation.whatsappId,
+            address: conversation.metadata?.address || 'No especificado',
+            ...this._getServiceSpecificData(conversation)
+        };
+    }
+
+    _getServiceSpecificData(conversation) {
+        const metadata = conversation.metadata || {};
+        const category = conversation.category || metadata.category;
+
+        const dataMap = {
+            'servicios_publicos': {
+                cuenta_contrato: metadata.accountNumber,
+                tipo_servicio: metadata.serviceType,
+                periodo_facturacion: metadata.billingPeriod
+            },
+            'telecomunicaciones': {
+                numero_linea: metadata.lineNumber,
+                plan_contratado: metadata.plan,
+                fecha_contratacion: metadata.contractDate
+            },
+            'transporte_aereo': {
+                numero_reserva: metadata.reservationNumber,
+                numero_vuelo: metadata.flightNumber,
+                fecha_vuelo: metadata.flightDate,
+                ruta: metadata.route,
+                valor_tiquete: metadata.ticketValue
+            }
+        };
+
+        return dataMap[category] || {};
+    }
+
+    _getLastMessageTime(conversation) {
+        if (!conversation.messages || conversation.messages.length === 0) {
+            return conversation.createdAt?.getTime() || Date.now();
+        }
+        const lastMessage = conversation.messages[conversation.messages.length - 1];
+        return new Date(lastMessage.timestamp).getTime();
+    }
+
+    async updateCategory(whatsappId, category, confidence = null) {
+        try {
+            const conversation = this.manager.get(whatsappId);
+            if (!conversation) return false;
+
+            // Actualizar tanto la propiedad directa como los metadatos
+            conversation.category = category;
+            await this.updateConversationMetadata(whatsappId, {
+                category: category,
+                classificationConfidence: confidence,
+                lastCategoryUpdate: new Date().toISOString()
+            });
+
+            logInfo('Category updated successfully', {
+                whatsappId,
+                category,
+                confidence
+            });
+
+            return true;
+        } catch (error) {
+            logError('Error updating category', {
+                error: error.message,
+                whatsappId,
+                stack: error.stack
+            });
+            return false;
+        }
+    }
+
+    async updateConversationMetadata(whatsappId, metadata) {
+        try {
+            const conversation = this.manager.get(whatsappId);
+            if (conversation) {
+                conversation.updateMetadata(metadata);
+                this.emit('conversationUpdated', conversation);
+                
+                logInfo('Metadata updated successfully', {
+                    whatsappId,
+                    category: metadata.category,
+                    confidence: metadata.classificationConfidence
+                });
+                
+                return true;
+            }
+            return false;
+        } catch (error) {
+
+            logError('Error actualizando metadata de conversación', {
+                error: error.message,
+                whatsappId,
+                stack: error.stack
+            });
+            return false;
         }
     }
 
@@ -306,6 +540,24 @@ class ConversationService extends ConversationEvents {
         try {
             const conversation = this.manager.get(whatsappId);
             if (conversation) {
+                // Reiniciar chat en Chatbase si hay una categoría activa
+                if (conversation.category && conversation.category !== 'unknown') {
+                    try {
+                        const chatbaseClient = require('../integrations/chatbaseClient');
+                        await chatbaseClient.resetChat(conversation.category);
+                        
+                        logInfo('Chat de Chatbase reiniciado', {
+                            whatsappId: conversation.whatsappId,
+                            category: conversation.category
+                        });
+                    } catch (error) {
+                        logError('Error reiniciando chat en Chatbase', {
+                            error: error.message,
+                            whatsappId: conversation.whatsappId
+                        });
+                    }
+                }
+
                 const conversationData = conversation.toJSON();
                 this.manager.delete(whatsappId);
                 
@@ -332,32 +584,6 @@ class ConversationService extends ConversationEvents {
         }
     }
 
-    async updateConversationMetadata(whatsappId, metadata) {
-        try {
-            const conversation = this.manager.get(whatsappId);
-            if (conversation) {
-                conversation.updateMetadata(metadata);
-                this.emit('conversationUpdated', conversation);
-                
-                logInfo('Metadata updated successfully', {
-                    whatsappId,
-                    category: metadata.category,
-                    confidence: metadata.classificationConfidence
-                });
-                
-                return true;
-            }
-            return false;
-        } catch (error) {
-            logError('Error actualizando metadata de conversación', {
-                error: error.message,
-                whatsappId,
-                stack: error.stack
-            });
-            return false;
-        }
-    }
-
     getConversationAnalytics() {
         try {
             const conversations = this.getAllConversations();
@@ -369,7 +595,13 @@ class ConversationService extends ConversationEvents {
                 averageMessagesPerConversation: 0,
                 messageTypes: {},
                 totalMessages: 0,
-                categoriesDistribution: {}
+                categoriesDistribution: {},
+                documentGenerationStats: {
+                    total: 0,
+                    successful: 0,
+                    pending: 0,
+                    failed: 0
+                }
             };
 
             for (const conversation of conversations) {
@@ -384,11 +616,26 @@ class ConversationService extends ConversationEvents {
                     analytics.messageTypes[msg.type] = (analytics.messageTypes[msg.type] || 0) + 1;
                 });
 
-                // Añadir distribución de categorías
+                // Distribución de categorías
                 if (conversation.category) {
                     analytics.categoriesDistribution[conversation.category] = 
                         (analytics.categoriesDistribution[conversation.category] || 0) + 1;
                 }
+
+                // Estadísticas de generación de documentos
+                if (conversation.metadata?.documentRequestPending) {
+                    analytics.documentGenerationStats.pending++;
+                }
+                if (conversation.metadata?.documentGenerated) {
+                    analytics.documentGenerationStats.successful++;
+                }
+                if (conversation.metadata?.documentGenerationFailed) {
+                    analytics.documentGenerationStats.failed++;
+                }
+                analytics.documentGenerationStats.total = 
+                    analytics.documentGenerationStats.successful + 
+                    analytics.documentGenerationStats.pending + 
+                    analytics.documentGenerationStats.failed;
             }
 
             if (analytics.totalConversations > 0) {
