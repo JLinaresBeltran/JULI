@@ -35,15 +35,13 @@ class MessageHandler {
             switch(messageType) {
                 case 'DOCUMENT_REQUEST':
                     return await this._handleDocumentRequest(message, conversation, context);
-                case 'EMAIL_SUBMISSION':
-                    return await this._handleEmailSubmission(message, conversation, context);
                 case 'NORMAL':
                     return await this._handleNormalMessage(message, conversation, context);
                 default:
                     throw new Error(`Unknown message type: ${messageType}`);
             }
         } catch (error) {
-            logError('Error handling message', { error, messageId: message.id });
+            logError('Error handling message', { error: error.message, messageId: message.id });
             await this._sendErrorMessage(message.from);
             throw error;
         }
@@ -53,19 +51,9 @@ class MessageHandler {
         if (message.type !== 'text') return 'NORMAL';
         
         const text = message.text.body.toLowerCase().trim();
-        
-        // Check for document request with multiple triggers
-        if (this.DOCUMENT_TRIGGERS.some(trigger => text.includes(trigger.toLowerCase()))) {
-            return 'DOCUMENT_REQUEST';
-        }
-        
-        // Then check if we're awaiting email
-        if (conversation?.metadata?.awaitingEmail === true) {
-            return 'EMAIL_SUBMISSION';
-        }
-        
-        // Default to normal message
-        return 'NORMAL';
+        return this.DOCUMENT_TRIGGERS.some(trigger => text.includes(trigger.toLowerCase())) 
+            ? 'DOCUMENT_REQUEST' 
+            : 'NORMAL';
     }
 
     async _handleDocumentRequest(message, conversation, context) {
@@ -74,8 +62,9 @@ class MessageHandler {
             category: conversation?.metadata?.category
         });
 
-        // Verify we have a valid category
-        if (!conversation?.metadata?.category || conversation.metadata.category === 'unknown') {
+        // Verificar que haya una categoría válida
+        const category = conversation?.metadata?.category;
+        if (!category || category === 'unknown') {
             await this.whatsappService.sendTextMessage(
                 message.from,
                 "Para generar el documento de reclamación, necesito que primero me cuentes tu caso en detalle para poder ayudarte adecuadamente."
@@ -84,50 +73,65 @@ class MessageHandler {
         }
 
         try {
+            // Preparar datos del cliente
             const customerData = this._prepareCustomerData(conversation, context);
-            const messages = conversation.messages.map(msg => msg.content).filter(Boolean);
 
-            // Generar el documento usando LegalAgentSystem
+            // Obtener los mensajes de la conversación
+            const messages = conversation.getMessages().map(msg => {
+                return {
+                    content: msg.text?.body || msg.content,
+                    timestamp: msg.timestamp,
+                    direction: msg.direction
+                };
+            }).filter(msg => msg.content);
+
+            logInfo('Generando documento con LegalAgentSystem', {
+                category,
+                whatsappId: message.from,
+                messagesCount: messages.length
+            });
+
+            // Procesar la queja
             const documentResult = await this.legalAgentSystem.processComplaint(
-                conversation.metadata.category,
+                category,
                 messages,
                 customerData
             );
 
-            // Formatear el documento para WhatsApp
+            // Formatear y enviar el documento
             const formattedDocument = this._formatDocumentForWhatsApp(documentResult);
+            await this.whatsappService.sendTextMessage(message.from, formattedDocument);
 
-            // Enviar el documento al usuario
-            await this.whatsappService.sendTextMessage(
-                message.from,
-                formattedDocument
-            );
-
-            // Actualizar el estado de la conversación
+            // Actualizar metadata de la conversación
             await this.conversationService.updateConversationMetadata(
                 conversation.whatsappId,
                 {
                     documentGenerated: true,
                     documentGeneratedTimestamp: new Date().toISOString(),
-                    documentType: conversation.metadata.category,
-                    lastProcessedMessageId: message.id
+                    documentType: category
                 }
             );
+
+            logInfo('Document generated and sent successfully', {
+                whatsappId: message.from,
+                category,
+                documentType: category
+            });
 
             return { success: true, type: 'DOCUMENT_GENERATED' };
 
         } catch (error) {
-            logError('Error generating document', { 
+            logError('Error generating document', {
                 error: error.message,
                 whatsappId: message.from,
-                category: conversation?.metadata?.category 
+                category: category
             });
-            
+
             await this.whatsappService.sendTextMessage(
                 message.from,
                 "Lo siento, hubo un problema al generar el documento. Por favor, intenta nuevamente o proporciona más detalles sobre tu caso."
             );
-            
+
             return { success: false, type: 'DOCUMENT_GENERATION_FAILED' };
         }
     }
@@ -145,7 +149,6 @@ class MessageHandler {
     }
 
     async _handleNormalMessage(message, conversation, context) {
-        // Process message normally - this includes classification and Chatbase
         await this.conversationService.processIncomingMessage(
             this._formatMessage(message, context)
         );
@@ -197,7 +200,8 @@ class MessageHandler {
     }
 
     _getServiceSpecificData(conversation) {
-        switch(conversation.metadata?.category) {
+        const category = conversation.metadata?.category;
+        switch(category) {
             case 'servicios_publicos':
                 return {
                     cuenta_contrato: conversation.metadata?.accountNumber,
