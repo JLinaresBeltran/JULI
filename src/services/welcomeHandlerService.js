@@ -15,11 +15,8 @@ class WelcomeHandlerService {
                 }
             });
 
-            // Obtener solo el texto del mensaje
-            const messageText = this.getWelcomeMessage(userName);
-
-            // Enviar solo el texto al servicio de WhatsApp
-            const response = await whatsappService.sendMessage(userId, messageText);
+            // Usar el método específico de bienvenida del whatsappService
+            const response = await whatsappService.sendWelcomeMessage(userId, userName);
             
             if (!response?.messages?.[0]?.id) {
                 throw new Error('No message ID received from WhatsApp');
@@ -36,7 +33,7 @@ class WelcomeHandlerService {
                 success: true,
                 message: {
                     type: 'text',
-                    text: { body: messageText }
+                    text: { body: this.getWelcomeMessage(userName) }
                 },
                 messageId: response.messages[0].id,
                 metadata: {
@@ -85,7 +82,7 @@ class WelcomeHandlerService {
     }
 
     getWelcomeMessage(userName) {
-        // Extraer solo el primer nombre
+        // Solo mantener esto como referencia ya que el mensaje real está en whatsappService.sendWelcomeMessage
         const firstName = userName.split(' ')[0];
         return `¡Hola ${firstName}! 👋\n\nSoy JULI, tu asistente legal virtual personalizada ✨\n\nMe especializo en brindarte orientación sobre:\n🏠 Servicios públicos\n📱 Telecomunicaciones\n✈️ Transporte aéreo\n\nCuéntame con detalle tu situación para poder ayudarte de la mejor manera posible. 💪`;
     }
