@@ -62,7 +62,8 @@ class MessageHandler {
             conversationExists: !!conversation,
             hasMetadata: !!conversation?.metadata,
             metadataCategory: conversation?.metadata?.category,
-            directCategory: conversation?.category // Verificar ambas ubicaciones
+            directCategory: conversation?.category,
+            allMetadata: conversation?.metadata // Log todos los metadatos
         });
     
         if (!conversation) {
@@ -72,7 +73,7 @@ class MessageHandler {
             return { success: false, type: 'NO_CONVERSATION' };
         }
     
-        // Intentar obtener la categoría de ambas ubicaciones
+        // Verificar la categoría en todas las ubicaciones posibles
         const category = conversation.category || conversation?.metadata?.category;
     
         logInfo('Document request details', {
@@ -80,15 +81,35 @@ class MessageHandler {
             category: category,
             metadata: conversation.metadata,
             conversationCategory: conversation.category,
-            messageCount: conversation.getMessages()?.length || 0
+            messageCount: conversation.getMessages()?.length || 0,
+            isClassified: !conversation?.awaitingClassification
         });
     
         // Verificar que haya una categoría válida
         if (!category || category === 'unknown') {
             logInfo('Invalid or missing category for document request', {
                 whatsappId: message.from,
-                category: category
+                category: category,
+                metadata: conversation.metadata
             });
+    
+            // Forzar una nueva clasificación
+            if (conversation.messages?.length > 0) {
+                try {
+                    const lastMessage = conversation.messages[conversation.messages.length - 1];
+                    await this.conversationService.processIncomingMessage(lastMessage, { skipWelcome: true });
+                    
+                    // Verificar si ahora tenemos una categoría
+                    if (conversation.category && conversation.category !== 'unknown') {
+                        return this._handleDocumentRequest(message, conversation, context);
+                    }
+                } catch (error) {
+                    logError('Error reclassifying conversation', {
+                        error: error.message,
+                        whatsappId: message.from
+                    });
+                }
+            }
     
             await this.whatsappService.sendTextMessage(
                 message.from,

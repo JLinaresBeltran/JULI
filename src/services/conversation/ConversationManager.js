@@ -95,27 +95,34 @@ class ConversationManager {
     
                 updateMetadata(metadata) {
                     try {
+                        // Mantener los metadatos existentes
                         this.metadata = {
                             ...this.metadata,
-                            ...metadata
+                            ...metadata,
+                            lastUpdateTime: Date.now()
                         };
-    
+                
+                        // Manejar explícitamente la categoría
                         if (metadata.category) {
                             this.category = metadata.category;
+                            this.metadata.category = metadata.category; // Asegurar que esté en ambos lugares
                             this.awaitingClassification = false;
                         }
-    
+                
                         if (metadata.classificationConfidence !== undefined) {
                             this.classificationConfidence = metadata.classificationConfidence;
+                            this.metadata.classificationConfidence = metadata.classificationConfidence;
                         }
-    
+                
                         this.lastUpdateTime = Date.now();
-    
+                
                         logInfo('Metadata updated successfully', {
                             whatsappId: this.whatsappId,
                             category: this.category,
+                            metadataCategory: this.metadata.category, // Log ambas ubicaciones
                             confidence: this.classificationConfidence,
-                            messageCount: this.messageCount
+                            messageCount: this.messageCount,
+                            metadata: this.metadata
                         });
                     } catch (error) {
                         logError('Error updating metadata', {
