@@ -101,6 +101,11 @@ function isGreeting(text) {
 const webhookController = {
     async receiveMessage(req, res) {
         try {
+            logInfo('API Request: POST /webhook', {
+                headers: req.headers['x-forwarded-for'] || req.ip,
+                timestamp: new Date().toLocaleTimeString()
+            });
+
             if (!validateWebhookPayload(req.body)) {
                 throw new Error('Invalid webhook payload');
             }
@@ -109,42 +114,53 @@ const webhookController = {
 
             for (const entry of req.body.entry) {
                 for (const change of entry.changes) {
-                    if (!change.value?.messages) {
-                        if (this._isConversationStart(change)) {
-                            await this._handleNewUserWelcome(
-                                change.value.contacts[0].wa_id,
-                                change.value
-                            );
-                            results.processed++;
-                        }
-                        continue;
-                    }
-
-                    const message = change.value.messages[0];
-                    const context = {
-                        metadata: change.value.metadata,
-                        contacts: change.value.contacts
-                    };
-
                     try {
-                        // Validar mensaje
-                        if (!validateMessage(message, context)) {
-                            throw new Error('Invalid message format');
+                        // Detectar inicio de conversación por sistema
+                        if (this._isSystemConversationStart(change)) {
+                            const userId = change.value.contacts[0].wa_id;
+                            await this._handleNewUserWelcome(userId, change.value);
+                            results.processed++;
+                            continue;
                         }
 
-                        // Procesar mensaje usando MessageHandler
-                        const result = await messageHandler.handleMessage(message, context);
-                        
-                        // Actualizar websockets si es necesario
-                        const conversation = await conversationService.getConversation(message.from);
-                        if (conversation) {
-                            this._broadcastUpdates(conversation);
-                        }
+                        // Procesar mensajes
+                        if (change.value?.messages?.length > 0) {
+                            const message = change.value.messages[0];
+                            const context = {
+                                metadata: change.value.metadata,
+                                contacts: change.value.contacts
+                            };
 
-                        this._addResult(results, message, 'success', result);
+                            // Validar mensaje
+                            if (!validateMessage(message, context)) {
+                                throw new Error('Invalid message format');
+                            }
+
+                            // Detectar si es primer mensaje de una nueva conversación
+                            const isNewConversation = !(await conversationService.getConversation(message.from));
+                            if (isNewConversation) {
+                                logInfo('Nueva conversación detectada por primer mensaje', {
+                                    userId: message.from
+                                });
+                                await this._handleNewUserWelcome(message.from, change.value);
+                            }
+
+                            // Procesar mensaje usando MessageHandler
+                            const result = await messageHandler.handleMessage(message, context);
+                            
+                            // Actualizar websockets
+                            const conversation = await conversationService.getConversation(message.from);
+                            if (conversation) {
+                                this._broadcastUpdates(conversation);
+                            }
+
+                            this._addResult(results, message, 'success', result);
+                        }
                     } catch (error) {
-                        this._addResult(results, message, 'error', { error });
-                        logError('Message processing error', { error });
+                        logError('Error processing change', { error: error.message });
+                        if (change.value?.messages?.[0]) {
+                            this._addResult(results, change.value.messages[0], 'error', { error });
+                        }
                     }
                 }
             }
@@ -158,7 +174,7 @@ const webhookController = {
         }
     },
 
-    _isConversationStart(change) {
+    _isSystemConversationStart(change) {
         return (
             change.field === "messages" &&
             change.value?.contacts?.[0] &&
@@ -170,14 +186,32 @@ const webhookController = {
 
     async _handleNewUserWelcome(userId, context) {
         try {
-            const userName = context?.contacts?.[0]?.profile?.name || 'Usuario';
-            const existingConversation = await conversationService.getConversation(userId);
-            
-            if (existingConversation) return existingConversation;
+            logInfo('Iniciando manejo de nuevo usuario', {
+                userId,
+                contextType: context?.event || 'message'
+            });
 
-            await welcomeHandlerService.handleInitialInteraction(userId, userName, context);
-            const conversation = await conversationService.createConversation(userId, userId);
-            this._broadcastUpdates(conversation);
+            const userName = context?.contacts?.[0]?.profile?.name || 'Usuario';
+            let conversation = await conversationService.getConversation(userId);
+            
+            if (!conversation) {
+                conversation = await conversationService.createConversation(userId, userId);
+                logInfo('Nueva conversación creada', {
+                    whatsappId: userId,
+                    userPhoneNumber: userId,
+                    context: 'createConversation'
+                });
+
+                await welcomeHandlerService.handleInitialInteraction(userId, userName, {
+                    ...context,
+                    conversation: {
+                        id: userId,
+                        isNew: true
+                    }
+                });
+
+                this._broadcastUpdates(conversation);
+            }
 
             return conversation;
         } catch (error) {
