@@ -1,12 +1,22 @@
+// src/controllers/webhookController.js
+const MessageHandler = require('../services/messageHandler');
 const conversationService = require('../services/conversationService');
 const whatsappService = require('../services/whatsappService');
 const welcomeHandlerService = require('../services/welcomeHandlerService');
 const WebSocketManager = require('../services/websocketService');
 const legalAgentSystem = require('../services/legalAgents');
 const documentService = require('../services/documentService');
+const chatbaseController = require('./chatbaseController');
 const { logInfo, logError } = require('../utils/logger');
 
-const documentRequestKey = "juli quiero el documento";
+// Crear instancia única del MessageHandler
+const messageHandler = new MessageHandler(
+    conversationService,
+    whatsappService,
+    chatbaseController,
+    legalAgentSystem,
+    documentService
+);
 
 function validateWebhookPayload(body) {
     if (!body || !body.object || !Array.isArray(body.entry)) {
@@ -99,229 +109,52 @@ const webhookController = {
 
             for (const entry of req.body.entry) {
                 for (const change of entry.changes) {
-                    if (!change.value?.messages) continue;
-
-                    const message = change.value.messages[0];
-                    const conversation = await conversationService.getConversation(message.from);
-
-                    if (conversation?.metadata?.awaitingEmail === true && 
-                        message.type === 'text') {
-                        const email = message.text.body.trim();
-                        if (this._isValidEmail(email)) {
-                            await this._handleEmailSubmission(message, conversation, change.value);
-                            return res.status(200).send('EVENT_RECEIVED');
+                    if (!change.value?.messages) {
+                        if (this._isConversationStart(change)) {
+                            await this._handleNewUserWelcome(
+                                change.value.contacts[0].wa_id,
+                                change.value
+                            );
+                            results.processed++;
                         }
-                        
-                        await whatsappService.sendTextMessage(
-                            conversation.whatsappId,
-                            "El correo electrónico no es válido. Por favor, ingresa un correo válido."
-                        );
-                        return res.status(200).send('EVENT_RECEIVED');
-                    }
-
-                    if (this._isConversationStart(change)) {
-                        await this._handleNewUserWelcome(message.from, change.value);
-                        results.processed++;
                         continue;
                     }
 
-                    await this._processMessages(change.value.messages, change.value, results);
+                    const message = change.value.messages[0];
+                    const context = {
+                        metadata: change.value.metadata,
+                        contacts: change.value.contacts
+                    };
+
+                    try {
+                        // Validar mensaje
+                        if (!validateMessage(message, context)) {
+                            throw new Error('Invalid message format');
+                        }
+
+                        // Procesar mensaje usando MessageHandler
+                        const result = await messageHandler.handleMessage(message, context);
+                        
+                        // Actualizar websockets si es necesario
+                        const conversation = await conversationService.getConversation(message.from);
+                        if (conversation) {
+                            this._broadcastUpdates(conversation);
+                        }
+
+                        this._addResult(results, message, 'success', result);
+                    } catch (error) {
+                        this._addResult(results, message, 'error', { error });
+                        logError('Message processing error', { error });
+                    }
                 }
             }
 
             logInfo('Webhook processed', { results });
             return res.status(200).send('EVENT_RECEIVED');
+
         } catch (error) {
             logError('Webhook error', { error });
             return res.status(200).send('EVENT_RECEIVED');
-        }
-    },
-
-    _isValidEmail(email) {
-        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
-    },
-
-    async _handleEmailSubmission(message, conversation, context) {
-        const email = message.text.body.trim();
-        
-        try {
-            logInfo('Iniciando proceso de documento legal', { 
-                email, 
-                whatsappId: conversation.whatsappId,
-                category: conversation.category,
-                timestamp: new Date().toISOString()
-            });
-
-            await conversationService.updateConversationMetadata(
-                conversation.whatsappId,
-                { 
-                    email: email,
-                    awaitingEmail: false,
-                    processingDocument: true
-                }
-            );
-
-            await whatsappService.sendTextMessage(
-                conversation.whatsappId,
-                "Procesando tu solicitud para generar el documento legal..."
-            );
-
-            const customerData = {
-                name: context.contacts?.[0]?.profile?.name || 'Usuario',
-                documentNumber: conversation.metadata?.documentNumber,
-                email: email,
-                phone: message.from,
-                address: conversation.metadata?.address || "No especificado",
-                ...this._getServiceSpecificData(conversation)
-            };
-
-            const result = await legalAgentSystem.processComplaint(
-                conversation.category,
-                conversation.getMessages(),
-                customerData
-            );
-
-            await documentService.generateDocument(
-                conversation.category,
-                result,
-                customerData
-            );
-
-            await whatsappService.sendTextMessage(
-                conversation.whatsappId,
-                "¡Documento generado y enviado a tu correo electrónico!"
-            );
-
-            await conversationService.updateConversationMetadata(
-                conversation.whatsappId,
-                { processingDocument: false }
-            );
-
-        } catch (error) {
-            logError('Error en procesamiento de documento', { error });
-            await whatsappService.sendTextMessage(
-                conversation.whatsappId,
-                "Lo siento, hubo un error procesando tu solicitud. Por favor, intenta nuevamente."
-            );
-            throw error;
-        }
-    },
-
-    _getServiceSpecificData(conversation) {
-        switch(conversation.category) {
-            case 'transporte_aereo':
-                return {
-                    numero_reserva: conversation.metadata?.reservationNumber || "N/A",
-                    numero_vuelo: conversation.metadata?.flightNumber || "N/A",
-                    fecha_vuelo: conversation.metadata?.flightDate || new Date().toISOString().split('T')[0],
-                    ruta: conversation.metadata?.route || "N/A",
-                    valor_tiquete: conversation.metadata?.ticketValue || "0"
-                };
-            case 'servicios_publicos':
-                return {
-                    cuenta_contrato: conversation.metadata?.accountNumber || "N/A",
-                    tipo_servicio: conversation.metadata?.serviceType || "N/A",
-                    periodo_facturacion: conversation.metadata?.billingPeriod || "N/A"
-                };
-            case 'telecomunicaciones':
-                return {
-                    numero_linea: conversation.metadata?.lineNumber || "N/A",
-                    plan_contratado: conversation.metadata?.plan || "N/A",
-                    fecha_contratacion: conversation.metadata?.contractDate || "N/A"
-                };
-            default:
-                return {};
-        }
-    },
-
-    async _processMessages(messages, context, results) {
-        for (const message of messages) {
-            try {
-                logInfo('Processing incoming message', {
-                    messageId: message.id,
-                    type: message.type,
-                    from: message.from
-                });
-                
-                if (!validateMessage(message, context)) {
-                    throw new Error('Invalid message format');
-                }
-                
-                const conversation = await conversationService.getConversation(message.from);
-                const isNewUser = !conversation;
-
-                if (isNewUser) {
-                    await this._handleNewUserWelcome(message.from, context);
-                }
-
-                if (message.type === 'text' && message.text.body.toLowerCase().trim() === documentRequestKey) {
-                    logInfo('Document request detected', {
-                        whatsappId: message.from,
-                        category: conversation?.category
-                    });
-                    
-                    if (!conversation?.category || conversation.category === 'unknown') {
-                        await whatsappService.sendTextMessage(
-                            message.from,
-                            "Por favor, cuéntame primero tu caso para poder ayudarte con el documento adecuado."
-                        );
-                        return;
-                    }
-
-                    await conversationService.updateConversationMetadata(
-                        message.from,
-                        {
-                            awaitingEmail: true,
-                            emailRequestTimestamp: new Date().toISOString(),
-                            documentRequestPending: true
-                        }
-                    );
-
-                    await whatsappService.sendTextMessage(
-                        message.from,
-                        "Por favor, proporciona tu correo electrónico para enviarte el documento de reclamación."
-                    );
-                    continue;
-                }
-
-                if (conversation?.metadata?.awaitingEmail && message.type === 'text') {
-                    const email = message.text.body.trim();
-                    if (this._isValidEmail(email)) {
-                        await this._handleEmailSubmission(message, conversation, context);
-                        continue;
-                    } else {
-                        await whatsappService.sendTextMessage(
-                            message.from,
-                            "El correo electrónico no es válido. Por favor, ingresa un correo válido."
-                        );
-                        continue;
-                    }
-                }
-
-                const formattedMessage = formatMessage(message, context);
-                await conversationService.processIncomingMessage(formattedMessage, {
-                    createIfNotExists: true,
-                    skipClassification: isNewUser
-                });
-
-                if (message.type === 'text' || message.type === 'audio') {
-                    await whatsappService.markAsRead(message.id);
-                }
-
-                this._broadcastUpdates(conversation);
-                this._addResult(results, message, 'success', {
-                    isFirstInteraction: isNewUser,
-                    messageType: message.type
-                });
-
-            } catch (error) {
-                logError('Message processing error', {
-                    error: error.message,
-                    messageId: message?.id,
-                    messageType: message?.type
-                });
-                this._addResult(results, message, 'error', error);
-            }
         }
     },
 
@@ -350,29 +183,6 @@ const webhookController = {
         } catch (error) {
             logError('Welcome flow error', { error: error.message });
             throw error;
-        }
-    },
-
-    async _processStatuses(statuses, context, results) {
-        for (const status of statuses) {
-            try {
-                results.processed++;
-                results.details.push({
-                    id: status.id,
-                    status: 'success',
-                    type: 'status',
-                    statusValue: status.status
-                });
-            } catch (error) {
-                logError('Status processing error', { error: error.message });
-                results.errors++;
-                results.details.push({
-                    id: status.id,
-                    status: 'error',
-                    type: 'status',
-                    error: error.message
-                });
-            }
         }
     },
 
