@@ -6,19 +6,20 @@ const welcomeHandlerService = require('../services/welcomeHandlerService');
 const WebSocketManager = require('../services/websocketService');
 const legalAgentSystem = require('../services/legalAgents');
 const documentService = require('../services/documentService');
-const DocumentRequestHandler = require('../services/documentRequestHandler');
 const { logInfo, logError } = require('../utils/logger');
+
+// Constants for document request triggers
+const DOCUMENT_TRIGGERS = [
+    "juli quiero el documento",
+    "quiero el documento",
+    "necesito el documento",
+    "generar documento",
+    "genera el documento",
+    "documento por favor"
+];
 
 class WebhookController {
     constructor() {
-        // Inicializar handlers especializados
-        this.documentRequestHandler = new DocumentRequestHandler(
-            conversationService,
-            whatsappService,
-            legalAgentSystem,
-            documentService
-        );
-
         this.messageProcessor = new MessageProcessor(
             conversationService,
             whatsappService,
@@ -132,12 +133,9 @@ class WebhookController {
 
         const conversation = await conversationService.getConversation(message.from);
 
-        if (this.documentRequestHandler.isDocumentRequest(message)) {
-            const documentResult = await this.documentRequestHandler.handleDocumentRequest(
-                message, 
-                conversation,
-                context
-            );
+        // Check if it's a document request
+        if (this._isDocumentRequest(message)) {
+            const documentResult = await this._handleDocumentRequest(message, conversation, context);
             this._addResult(results, message, 'success', documentResult);
             return;
         }
@@ -145,6 +143,105 @@ class WebhookController {
         await this.messageProcessor.processMessage(message, context);
         this._broadcastUpdates(conversation);
         this._addResult(results, message, 'success', { type: 'MESSAGE_PROCESSED' });
+    }
+
+    _isDocumentRequest(message) {
+        if (message.type !== 'text') return false;
+        const normalizedText = message.text.body.toLowerCase().trim();
+        return DOCUMENT_TRIGGERS.some(trigger => normalizedText.includes(trigger));
+    }
+
+    async _handleDocumentRequest(message, conversation, context) {
+        try {
+            logInfo('Starting document request process', {
+                whatsappId: message.from,
+                category: conversation?.category
+            });
+
+            // Verify if waiting for email
+            if (conversation?.metadata?.awaitingEmail) {
+                return this._handleEmailSubmission(message, conversation);
+            }
+
+            // Verify valid category
+            if (!this._validateConversationForDocument(conversation)) {
+                await this._sendInvalidConversationMessage(message.from);
+                return { success: false, type: 'INVALID_CATEGORY' };
+            }
+
+            // Request email if not available
+            await conversationService.updateConversationMetadata(
+                conversation.whatsappId,
+                {
+                    awaitingEmail: true,
+                    documentRequestPending: true
+                }
+            );
+
+            await whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "Por favor, proporciona tu correo electrónico para enviarte el documento de reclamación."
+            );
+
+            return { success: true, type: 'EMAIL_REQUESTED' };
+        } catch (error) {
+            logError('Error handling document request', { error });
+            await this._sendErrorMessage(message.from);
+            throw error;
+        }
+    }
+
+    async _handleEmailSubmission(message, conversation) {
+        const email = message.text.body.trim();
+        if (!this._isValidEmail(email)) {
+            await whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "El correo electrónico no es válido. Por favor, ingresa un correo válido."
+            );
+            return { success: true, type: 'INVALID_EMAIL' };
+        }
+
+        return await this._generateDocument(conversation, email);
+    }
+
+    async _generateDocument(conversation, email) {
+        try {
+            const category = conversation.category || conversation.metadata?.category;
+            const customerData = this._prepareCustomerData(conversation, email);
+
+            const result = await legalAgentSystem.processComplaint(
+                category,
+                conversation.getMessages(),
+                customerData
+            );
+
+            await documentService.generateDocument(
+                category,
+                result,
+                customerData
+            );
+
+            await conversationService.updateConversationMetadata(
+                conversation.whatsappId,
+                {
+                    documentGenerated: true,
+                    documentGeneratedTimestamp: new Date().toISOString(),
+                    email: email,
+                    awaitingEmail: false,
+                    documentRequestPending: false
+                }
+            );
+
+            await whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "¡Tu documento ha sido generado y enviado a tu correo electrónico!"
+            );
+
+            return { success: true, type: 'DOCUMENT_GENERATED' };
+        } catch (error) {
+            logError('Error generating document', { error });
+            throw error;
+        }
     }
 
     _isSystemConversationStart(change) {
@@ -197,6 +294,68 @@ class WebhookController {
 
         this._broadcastUpdates(conversation);
         return conversation;
+    }
+
+    _validateConversationForDocument(conversation) {
+        if (!conversation) return false;
+        const category = conversation.category || conversation.metadata?.category;
+        return category && category !== 'unknown';
+    }
+
+    _isValidEmail(email) {
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+    }
+
+    _prepareCustomerData(conversation, email) {
+        return {
+            name: conversation.metadata?.customerName || 'Usuario',
+            documentNumber: conversation.metadata?.documentNumber,
+            email: email,
+            phone: conversation.whatsappId,
+            address: conversation.metadata?.address || 'No especificado',
+            ...this._getServiceSpecificData(conversation)
+        };
+    }
+
+    _getServiceSpecificData(conversation) {
+        const metadata = conversation.metadata || {};
+        const category = conversation.category || metadata.category;
+
+        const dataMap = {
+            'servicios_publicos': {
+                cuenta_contrato: metadata.accountNumber,
+                tipo_servicio: metadata.serviceType,
+                periodo_facturacion: metadata.billingPeriod
+            },
+            'telecomunicaciones': {
+                numero_linea: metadata.lineNumber,
+                plan_contratado: metadata.plan,
+                fecha_contratacion: metadata.contractDate
+            },
+            'transporte_aereo': {
+                numero_reserva: metadata.reservationNumber,
+                numero_vuelo: metadata.flightNumber,
+                fecha_vuelo: metadata.flightDate,
+                ruta: metadata.route,
+                valor_tiquete: metadata.ticketValue
+            }
+        };
+
+        return dataMap[category] || {};
+    }
+
+    async _sendInvalidConversationMessage(whatsappId) {
+        await whatsappService.sendTextMessage(
+            whatsappId,
+            "Para generar el documento de reclamación, necesito que primero me cuentes tu caso para poder ayudarte adecuadamente."
+        );
+    }
+
+    async _sendErrorMessage(whatsappId) {
+        await whatsappService.sendTextMessage(
+            whatsappId,
+            "Lo siento, hubo un error procesando tu solicitud. Por favor, intenta nuevamente."
+        );
     }
 
     _addResult(results, message, status, details) {
