@@ -8,7 +8,6 @@ const legalAgentSystem = require('../services/legalAgents');
 const documentService = require('../services/documentService');
 const { logInfo, logError } = require('../utils/logger');
 
-// Constants for document request triggers
 const DOCUMENT_TRIGGERS = [
     "juli quiero el documento",
     "quiero el documento",
@@ -29,7 +28,6 @@ class WebhookController {
         );
     }
 
-    // Validation Methods
     validateWebhookPayload(body) {
         return body?.object === 'whatsapp_business_account' && Array.isArray(body?.entry);
     }
@@ -61,7 +59,6 @@ class WebhookController {
         }
     }
 
-    // Main Controller Methods
     async receiveMessage(req, res) {
         try {
             logInfo('API Request: POST /webhook', {
@@ -121,27 +118,31 @@ class WebhookController {
             metadata: change.value.metadata,
             contacts: change.value.contacts
         };
-
+    
         if (!this.validateMessage(message, context)) {
             throw new Error('Invalid message format');
         }
-
-        const isNewConversation = !(await conversationService.getConversation(message.from));
-        if (isNewConversation) {
+    
+        const conversation = await conversationService.getConversation(message.from);
+        if (conversation && this._isDuplicateMessage(conversation, message)) {
+            logInfo('Duplicate message detected and skipped', { messageId: message.id });
+            return;
+        }
+    
+        if (!conversation) {
             await this._handleNewUserWelcome(message.from, change.value);
         }
-
-        const conversation = await conversationService.getConversation(message.from);
-
-        // Check if it's a document request
+    
+        const updatedConversation = await conversationService.getConversation(message.from);
+    
         if (this._isDocumentRequest(message)) {
-            const documentResult = await this._handleDocumentRequest(message, conversation, context);
+            const documentResult = await this._handleDocumentRequest(message, updatedConversation, context);
             this._addResult(results, message, 'success', documentResult);
             return;
         }
-
+    
         await this.messageProcessor.processMessage(message, context);
-        this._broadcastUpdates(conversation);
+        this._broadcastUpdates(updatedConversation);
         this._addResult(results, message, 'success', { type: 'MESSAGE_PROCESSED' });
     }
 
@@ -158,18 +159,15 @@ class WebhookController {
                 category: conversation?.category
             });
 
-            // Verify if waiting for email
             if (conversation?.metadata?.awaitingEmail) {
                 return this._handleEmailSubmission(message, conversation);
             }
 
-            // Verify valid category
             if (!this._validateConversationForDocument(conversation)) {
                 await this._sendInvalidConversationMessage(message.from);
                 return { success: false, type: 'INVALID_CATEGORY' };
             }
 
-            // Request email if not available
             await conversationService.updateConversationMetadata(
                 conversation.whatsappId,
                 {
@@ -376,7 +374,6 @@ class WebhookController {
         }
     }
 
-    // Analytics Methods
     async getConversations(req, res) {
         try {
             const conversations = await conversationService.getAllConversations();
@@ -398,10 +395,8 @@ class WebhookController {
     }
 }
 
-// Create singleton instance
 const webhookController = new WebhookController();
 
-// Export controller methods with proper binding
 module.exports = {
     receiveMessage: webhookController.receiveMessage.bind(webhookController),
     getConversations: webhookController.getConversations.bind(webhookController),

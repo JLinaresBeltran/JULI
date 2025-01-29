@@ -1,0 +1,16 @@
+{
+  "customerName": "Carlos Test",
+  "companyName": "Empresa de Telecomunicaciones",
+  "reference": "Reclamación - telecomunicaciones",
+  "hechos": [
+    "El usuario reporta problemas con el servicio de internet contratado.",
+    "La velocidad del servicio no corresponde a lo acordado en el contrato.",
+    "Se han realizado múltiples reportes sin obtener solución."
+  ],
+  "peticion": "Solicito la revisión técnica del servicio y el ajuste de la facturación de acuerdo al servicio realmente prestado.",
+  "metadata": {
+    "category": "telecomunicaciones",
+    "timestamp": "2025-01-29T01:46:41.769Z",
+    "version": "1.0"
+  }
+}
