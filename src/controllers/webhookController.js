@@ -51,8 +51,6 @@ class WebhookController {
                 default:
                     return true;
             }
-
-            return isValidPhoneNumber;
         } catch (error) {
             logError('Message validation error', { error: error.message });
             return false;
@@ -124,7 +122,9 @@ class WebhookController {
         }
     
         const conversation = await conversationService.getConversation(message.from);
-        if (conversation && this._isDuplicateMessage(conversation, message)) {
+        
+        // Verificar duplicados usando los mensajes de la conversación
+        if (conversation && this._checkDuplicateMessage(conversation, message)) {
             logInfo('Duplicate message detected and skipped', { messageId: message.id });
             return;
         }
@@ -136,14 +136,19 @@ class WebhookController {
         const updatedConversation = await conversationService.getConversation(message.from);
     
         if (this._isDocumentRequest(message)) {
-            const documentResult = await this._handleDocumentRequest(message, conversation, context);
+            const documentResult = await this._handleDocumentRequest(message, updatedConversation, context);
             this._addResult(results, message, 'success', documentResult);
             return;
         }
     
+        // Procesar mensaje normal
         await this.messageProcessor.processMessage(message, context);
         this._broadcastUpdates(updatedConversation);
         this._addResult(results, message, 'success', { type: 'MESSAGE_PROCESSED' });
+    }
+
+    _checkDuplicateMessage(conversation, message) {
+        return conversation.messages.some(m => m.id === message.id);
     }
 
     _isDocumentRequest(message) {
