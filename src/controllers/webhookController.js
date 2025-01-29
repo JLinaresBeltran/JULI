@@ -350,7 +350,7 @@ class WebhookController {
     async _sendInvalidConversationMessage(whatsappId) {
         await whatsappService.sendTextMessage(
             whatsappId,
-            "Para generar el documento de reclamación, necesito que primero me cuentes tu caso para poder ayudarte adecuadamente."
+            "Para generar el documento formal de reclamación, necesito que primero me cuentes tu caso para poder ayudarte adecuadamente."
         );
     }
 

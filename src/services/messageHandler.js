@@ -176,7 +176,7 @@ class DocumentRequestHandler {
     async _sendInvalidConversationMessage(whatsappId) {
         await this.whatsappService.sendTextMessage(
             whatsappId,
-            "Para generar el documento de reclamación, necesito que primero me indiques tu direccion de correo electrónico."
+            "Para generar el documento de reclamación, necesito que primero me cuentes tu caso para poder ayudarte adecuadamente."
         );
     }
 
