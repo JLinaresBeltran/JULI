@@ -21,10 +21,45 @@ class MessageProcessor {
             "quiero documento",
             "documento por favor"
         ];
+
+        // Cache para mensajes procesados
+        this.processedMessages = new Set();
+        // Tiempo de expiración para mensajes en cache (15 minutos)
+        this.messageExpirationTime = 15 * 60 * 1000;
+    }
+
+    _isDuplicateMessage(messageId) {
+        if (!messageId) return false;
+        
+        // Verificar si el mensaje ya fue procesado
+        if (this.processedMessages.has(messageId)) {
+            logInfo('Mensaje duplicado detectado', { messageId });
+            return true;
+        }
+
+        // Agregar mensaje al cache
+        this.processedMessages.add(messageId);
+
+        // Programar limpieza del mensaje del cache
+        setTimeout(() => {
+            this.processedMessages.delete(messageId);
+            logInfo('Mensaje eliminado del cache', { messageId });
+        }, this.messageExpirationTime);
+
+        return false;
     }
 
     async processMessage(message, context) {
         try {
+            // Verificar duplicados antes de procesar
+            if (this._isDuplicateMessage(message.id)) {
+                logInfo('Mensaje duplicado ignorado', { 
+                    messageId: message.id,
+                    from: message.from 
+                });
+                return { success: true, status: 'DUPLICATE_MESSAGE' };
+            }
+
             logInfo(`Procesando mensaje de ${message.from}:`, message.text?.body);
 
             const conversation = await this.conversationService.getConversation(message.from);
