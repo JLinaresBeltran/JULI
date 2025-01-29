@@ -23,71 +23,102 @@ class DocumentRequestHandler {
             logInfo('Processing document request', {
                 whatsappId: message.from,
                 category: conversation?.category,
-                conversationId: conversation?.whatsappId
+                hasEmail: Boolean(conversation.metadata?.email)
             });
-
-            // Validar que la conversación tenga una categoría asignada
-            if (!conversation?.category || conversation.category === 'unknown') {
-                await this.whatsappService.sendTextMessage(
+    
+            // Extraer datos de WhatsApp
+            const userName = conversation.metadata?.customerName || 'Usuario';
+            const userPhone = conversation.whatsappId;
+    
+            // Verificar si ya tenemos el correo
+            if (!conversation.metadata?.email) {
+                await whatsappService.sendTextMessage(
                     message.from,
-                    "Para generar el documento, primero necesito que me cuentes tu caso."
+                    "Para generarte el documento legal, necesito tu correo electrónico. Por favor, escríbelo a continuación."
                 );
-                return { success: false, reason: 'NO_CATEGORY' };
-            }
-
-            // Notificar al usuario que se está procesando su solicitud
-            await this.whatsappService.sendTextMessage(
-                message.from,
-                "Estoy procesando tu solicitud para generar el documento legal..."
-            );
-
-            // Preparar datos para el agente legal
-            const customerData = {
-                name: conversation.metadata?.customerName || 'Usuario',
-                phone: message.from,
-                category: conversation.category,
-                documentNumber: conversation.metadata?.documentNumber || '',
-                email: conversation.metadata?.email || '',
-                address: conversation.metadata?.address || ''
-            };
-
-            // Enviar al agente legal para procesar
-            const result = await this.legalAgentSystem.processComplaint(
-                conversation.category,
-                conversation.getMessages(),
-                customerData
-            );
-
-            // Confirmar procesamiento
-            await this.whatsappService.sendTextMessage(
-                message.from,
-                "He terminado de procesar tu caso. Para enviarte el documento necesitaré tu correo electrónico."
-            );
-
-            // Actualizar metadata de la conversación
-            await this.conversationService.updateConversationMetadata(
-                message.from,
-                {
+    
+                // Marcar conversación como esperando email
+                await this.updateConversationMetadata(conversation.whatsappId, {
                     awaitingEmail: true,
-                    documentData: result,
-                    documentRequestTimestamp: new Date().toISOString()
-                }
-            );
-
-            return { success: true, type: 'DOCUMENT_PROCESSED' };
-
+                    documentRequestPending: true,
+                    customerName: userName,
+                    phone: userPhone
+                });
+    
+                return { success: true, status: 'AWAITING_EMAIL' };
+            }
+    
+            // Si ya tenemos el correo, proceder con el documento
+            return await this._processDocumentWithAgent(conversation);
+    
         } catch (error) {
-            logError('Error in document request handler', {
+            logError('Error processing document request', {
                 error: error.message,
                 whatsappId: message.from
             });
-
-            await this.whatsappService.sendTextMessage(
+    
+            await whatsappService.sendTextMessage(
                 message.from,
                 "Lo siento, hubo un error procesando tu solicitud. Por favor, intenta nuevamente."
             );
-
-            return { success: false, reason: 'PROCESSING_ERROR', error };
+    
+            return { success: false, error };
+        }
+    }
+    
+    async _processDocumentWithAgent(conversation) {
+        try {
+            // Preparar datos del usuario
+            const userData = {
+                name: conversation.metadata?.customerName,
+                phone: conversation.whatsappId,
+                email: conversation.metadata?.email
+            };
+    
+            // Preparar la conversación para el agente
+            const conversationText = conversation.messages
+                .filter(msg => msg.type === 'text')
+                .map(msg => {
+                    const role = msg.from === conversation.whatsappId ? 'Usuario' : 'JULI';
+                    return `${role}: ${msg.text.body}`;
+                })
+                .join('\n');
+    
+            // Procesar con el agente legal
+            const result = await legalAgentSystem.processComplaint(
+                conversation.category || 'unknown',
+                conversationText,
+                userData
+            );
+    
+            // Generar documento
+            await documentService.generateDocument(
+                conversation.category,
+                result,
+                userData
+            );
+    
+            // Notificar al usuario
+            await whatsappService.sendTextMessage(
+                conversation.whatsappId,
+                "¡Tu documento ha sido generado y enviado a tu correo electrónico!"
+            );
+    
+            // Actualizar metadata de la conversación
+            await this.updateConversationMetadata(conversation.whatsappId, {
+                documentGenerated: true,
+                documentGeneratedTimestamp: new Date().toISOString(),
+                awaitingEmail: false,
+                documentRequestPending: false
+            });
+    
+            return { success: true, status: 'DOCUMENT_GENERATED' };
+        } catch (error) {
+            logError('Error generating document', {
+                error: error.message,
+                whatsappId: conversation.whatsappId
+            });
+            throw error;
         }
     }
 }
