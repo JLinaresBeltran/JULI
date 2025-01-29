@@ -10,6 +10,12 @@ const { logInfo, logError } = require('../utils/logger');
 
 class WebhookController {
     constructor() {
+        // Verificar que todos los servicios necesarios estén disponibles
+        if (!conversationService || !whatsappService || !legalAgentSystem || !documentService) {
+            throw new Error('Servicios requeridos no disponibles para WebhookController');
+        }
+
+        // Inicializar MessageProcessor con todas las dependencias necesarias
         this.messageProcessor = new MessageProcessor(
             conversationService,
             whatsappService,
@@ -17,6 +23,11 @@ class WebhookController {
             legalAgentSystem,
             documentService
         );
+
+        this.whatsappService = whatsappService;
+        this.conversationService = conversationService;
+        
+        logInfo('WebhookController inicializado con todos los servicios');
     }
 
     validateWebhookPayload(body) {
@@ -64,7 +75,7 @@ class WebhookController {
             logInfo('Webhook processed', { results });
             return res.status(200).send('EVENT_RECEIVED');
         } catch (error) {
-            logError('Webhook error', { error });
+            logError('Webhook error', { error: error.message, stack: error.stack });
             return res.status(200).send('EVENT_RECEIVED');
         }
     }
@@ -77,10 +88,14 @@ class WebhookController {
                 try {
                     await this._processWebhookChange(change, results);
                 } catch (error) {
-                    logError('Error processing change', { error: error.message });
+                    logError('Error processing change', { 
+                        error: error.message,
+                        stack: error.stack
+                    });
                     if (change.value?.messages?.[0]) {
                         this._addResult(results, change.value.messages[0], 'error', { error });
                     }
+                    results.errors++;
                 }
             }
         }
@@ -112,7 +127,7 @@ class WebhookController {
             throw new Error('Invalid message format');
         }
     
-        const conversation = await conversationService.getConversation(message.from);
+        const conversation = await this.conversationService.getConversation(message.from);
         
         if (conversation && this._checkDuplicateMessage(conversation, message)) {
             logInfo('Duplicate message detected and skipped', { messageId: message.id });
@@ -123,12 +138,21 @@ class WebhookController {
             await this._handleNewUserWelcome(message.from, change.value);
         }
     
-        const updatedConversation = await conversationService.getConversation(message.from);
+        const updatedConversation = await this.conversationService.getConversation(message.from);
     
-        // Procesar mensaje usando MessageProcessor
-        const processingResult = await this.messageProcessor.processMessage(message, context);
-        this._broadcastUpdates(updatedConversation);
-        this._addResult(results, message, 'success', processingResult);
+        try {
+            // Procesar mensaje usando MessageProcessor
+            const processingResult = await this.messageProcessor.processMessage(message, context);
+            this._broadcastUpdates(updatedConversation);
+            this._addResult(results, message, 'success', processingResult);
+        } catch (error) {
+            logError('Error processing message', {
+                error: error.message,
+                messageId: message.id,
+                stack: error.stack
+            });
+            throw error;
+        }
     }
 
     _checkDuplicateMessage(conversation, message) {
@@ -153,7 +177,7 @@ class WebhookController {
             });
 
             const userName = context?.contacts?.[0]?.profile?.name || 'Usuario';
-            let conversation = await conversationService.getConversation(userId);
+            let conversation = await this.conversationService.getConversation(userId);
             
             if (!conversation) {
                 conversation = await this._createNewConversation(userId, userName, context);
@@ -161,13 +185,13 @@ class WebhookController {
 
             return conversation;
         } catch (error) {
-            logError('Welcome flow error', { error: error.message });
+            logError('Welcome flow error', { error: error.message, stack: error.stack });
             throw error;
         }
     }
 
     async _createNewConversation(userId, userName, context) {
-        const conversation = await conversationService.createConversation(userId, userId);
+        const conversation = await this.conversationService.createConversation(userId, userId);
         
         logInfo('Nueva conversación creada', {
             whatsappId: userId,
@@ -207,7 +231,7 @@ class WebhookController {
 
     async getConversations(req, res) {
         try {
-            const conversations = await conversationService.getAllConversations();
+            const conversations = await this.conversationService.getAllConversations();
             return res.status(200).json(conversations);
         } catch (error) {
             logError('Conversations retrieval error', { error: error.message });
@@ -217,7 +241,7 @@ class WebhookController {
 
     async getConversationAnalytics(req, res) {
         try {
-            const analytics = await conversationService.getConversationAnalytics();
+            const analytics = await this.conversationService.getConversationAnalytics();
             return res.status(200).json(analytics);
         } catch (error) {
             logError('Analytics error', { error: error.message });
@@ -226,8 +250,10 @@ class WebhookController {
     }
 }
 
+// Crear una instancia única del controlador
 const webhookController = new WebhookController();
 
+// Exportar los métodos necesarios asegurando el contexto correcto
 module.exports = {
     receiveMessage: webhookController.receiveMessage.bind(webhookController),
     getConversations: webhookController.getConversations.bind(webhookController),
