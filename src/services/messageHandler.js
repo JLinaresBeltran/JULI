@@ -1,4 +1,4 @@
-// src/services/documentRequestHandler.js
+// src/services/messageHandler.js
 const { logInfo, logError } = require('../utils/logger');
 
 class DocumentRequestHandler {
@@ -8,7 +8,7 @@ class DocumentRequestHandler {
         this.legalAgentSystem = legalAgentSystem;
         this.documentService = documentService;
         
-        // Triggers para la generación de documentos
+        // Triggers actualizados para generación de documentos
         this.DOCUMENT_TRIGGERS = [
             "juli quiero el documento",
             "quiero el documento",
@@ -22,25 +22,37 @@ class DocumentRequestHandler {
     isDocumentRequest(message) {
         if (message.type !== 'text') return false;
         const normalizedText = message.text.body.toLowerCase().trim();
-        return this.DOCUMENT_TRIGGERS.some(trigger => 
-            normalizedText.includes(trigger.toLowerCase())
-        );
+        return this.DOCUMENT_TRIGGERS.some(trigger => normalizedText.includes(trigger));
     }
 
     async handleDocumentRequest(message, conversation, context) {
         try {
-            // 1. Validar que tengamos una categoría válida
+            logInfo('Starting document request process', {
+                whatsappId: message.from,
+                conversationId: conversation?.whatsappId,
+                category: conversation?.category || conversation?.metadata?.category
+            });
+
+            // Verificar si hay una categoría válida
             if (!this._validateConversationForDocument(conversation)) {
                 await this._sendInvalidConversationMessage(message.from);
-                return { success: false, reason: 'INVALID_CONVERSATION' };
+                return { success: false, reason: 'INVALID_CATEGORY' };
             }
 
-            // 2. Verificar si estamos esperando un email
+            // Verificar y solicitar correo si es necesario
             if (conversation.metadata?.awaitingEmail) {
-                return this._handleEmailSubmission(message, conversation);
+                const email = message.text.body.trim();
+                if (this._isValidEmail(email)) {
+                    return await this._processDocumentGeneration(conversation, email);
+                } else {
+                    await this.whatsappService.sendTextMessage(
+                        message.from,
+                        "El correo electrónico no es válido. Por favor, ingresa un correo válido."
+                    );
+                    return { success: true, type: 'INVALID_EMAIL' };
+                }
             }
 
-            // 3. Si no tenemos email, solicitarlo
             if (!conversation.metadata?.email) {
                 await this.conversationService.updateConversationMetadata(
                     conversation.whatsappId,
@@ -51,49 +63,29 @@ class DocumentRequestHandler {
                 );
 
                 await this.whatsappService.sendTextMessage(
-                    message.from,
+                    conversation.whatsappId,
                     "Por favor, proporciona tu correo electrónico para enviarte el documento de reclamación."
                 );
-
                 return { success: true, type: 'EMAIL_REQUESTED' };
             }
 
-            // 4. Si tenemos email, proceder con la generación
             return await this._processDocumentGeneration(conversation);
 
         } catch (error) {
-            console.error('Error en document request handler:', error);
+            logError('Error in document request handler', {
+                error: error.message,
+                whatsappId: message.from
+            });
             await this._sendErrorMessage(message.from);
             throw error;
         }
     }
 
-    _validateConversationForDocument(conversation) {
-        if (!conversation) return false;
-        const category = conversation.category || conversation.metadata?.category;
-        return category && category !== 'unknown';
-    }
-
-    async _handleEmailSubmission(message, conversation) {
-        const email = message.text.body.trim();
-        
-        if (!this._isValidEmail(email)) {
-            await this.whatsappService.sendTextMessage(
-                conversation.whatsappId,
-                "El correo electrónico no es válido. Por favor, ingresa un correo válido."
-            );
-            return { success: true, type: 'INVALID_EMAIL' };
-        }
-
-        return await this._processDocumentGeneration(conversation, email);
-    }
-
     async _processDocumentGeneration(conversation, email = null) {
-        const category = conversation.category || conversation.metadata?.category;
-        const customerData = this._prepareCustomerData(conversation, email);
-
         try {
-            // Generar el documento
+            const category = conversation.category || conversation.metadata?.category;
+            const customerData = this._prepareCustomerData(conversation, email);
+
             const result = await this.legalAgentSystem.processComplaint(
                 category,
                 conversation.getMessages(),
@@ -106,7 +98,6 @@ class DocumentRequestHandler {
                 customerData
             );
 
-            // Actualizar metadata de la conversación
             await this.conversationService.updateConversationMetadata(
                 conversation.whatsappId,
                 {
@@ -118,17 +109,26 @@ class DocumentRequestHandler {
                 }
             );
 
-            // Notificar al usuario
             await this.whatsappService.sendTextMessage(
                 conversation.whatsappId,
                 "¡Tu documento ha sido generado y enviado a tu correo electrónico!"
             );
 
             return { success: true, type: 'DOCUMENT_GENERATED' };
+
         } catch (error) {
-            console.error('Error generando documento:', error);
+            logError('Error generating document', {
+                error: error.message,
+                whatsappId: conversation.whatsappId
+            });
             throw error;
         }
+    }
+
+    _validateConversationForDocument(conversation) {
+        if (!conversation) return false;
+        const category = conversation.category || conversation.metadata?.category;
+        return category && category !== 'unknown';
     }
 
     _isValidEmail(email) {

@@ -136,7 +136,7 @@ class WebhookController {
         const updatedConversation = await conversationService.getConversation(message.from);
     
         if (this._isDocumentRequest(message)) {
-            const documentResult = await this._handleDocumentRequest(message, updatedConversation, context);
+            const documentResult = await this._handleDocumentRequest(message, conversation, context);
             this._addResult(results, message, 'success', documentResult);
             return;
         }
