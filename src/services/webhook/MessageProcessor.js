@@ -4,13 +4,18 @@ const DocumentRequestHandler = require('../messageHandler');
 
 class MessageProcessor {
     constructor(conversationService, whatsappService, wsManager, legalAgentSystem, documentService) {
+        // Validar servicios requeridos
+        if (!conversationService || !whatsappService || !legalAgentSystem || !documentService) {
+            throw new Error('Todos los servicios son requeridos para MessageProcessor');
+        }
+
         this.conversationService = conversationService;
         this.whatsappService = whatsappService;
         this.wsManager = wsManager;
         this.legalAgentSystem = legalAgentSystem;
         this.documentService = documentService;
         
-        // Inicializar DocumentRequestHandler
+        // Inicializar DocumentRequestHandler con todas las dependencias
         this.documentHandler = new DocumentRequestHandler(
             conversationService,
             whatsappService,
@@ -18,8 +23,7 @@ class MessageProcessor {
             documentService
         );
 
-        // Trigger específico para documentos
-        this.DOCUMENT_TRIGGER = "juli quiero el documento";
+        logInfo('MessageProcessor inicializado correctamente');
     }
 
     async processMessage(message, context) {
@@ -40,7 +44,7 @@ class MessageProcessor {
             }
 
             // 3. Verificar si es una solicitud de documento
-            if (this._isDocumentRequest(message)) {
+            if (this.documentHandler.isDocumentRequest(message)) {
                 logInfo('Document request detected', { from: message.from });
                 const documentResult = await this.documentHandler.handleDocumentRequest(message, conversation);
                 this._updateWebSocket(conversation);
@@ -63,12 +67,6 @@ class MessageProcessor {
             });
             throw error;
         }
-    }
-
-    _isDocumentRequest(message) {
-        if (message.type !== 'text') return false;
-        const normalizedText = message.text.body.toLowerCase().trim();
-        return normalizedText.includes(this.DOCUMENT_TRIGGER);
     }
 
     async _getOrCreateConversation(message, context) {
