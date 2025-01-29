@@ -1,4 +1,4 @@
-// src/services/documentHandler.js
+// src/services/messageHandler.js
 const { logInfo, logError } = require('../utils/logger');
 
 class DocumentRequestHandler {
@@ -8,7 +8,6 @@ class DocumentRequestHandler {
         this.legalAgentSystem = legalAgentSystem;
         this.documentService = documentService;
         
-        // Trigger específico para la generación de documento
         this.DOCUMENT_TRIGGER = "juli quiero el documento";
     }
 
@@ -35,53 +34,57 @@ class DocumentRequestHandler {
                 return { success: false, reason: 'NO_CATEGORY' };
             }
 
-            // Validar datos necesarios
+            // Validar correo electrónico
             if (!conversation.metadata?.email) {
                 await this.whatsappService.sendTextMessage(
                     message.from,
                     "Para enviarte el documento necesito tu correo electrónico. ¿Me lo podrías proporcionar?"
                 );
+                await this.conversationService.updateConversationMetadata(
+                    message.from,
+                    { awaitingEmail: true }
+                );
                 return { success: false, reason: 'NO_EMAIL' };
             }
 
-            // Notificar al usuario que se está procesando su solicitud
+            // Iniciar proceso de generación
             await this.whatsappService.sendTextMessage(
                 message.from,
                 "Estoy procesando tu solicitud para generar el documento legal..."
             );
 
-            // Preparar datos para el agente legal
+            // Preparar datos recopilados
             const customerData = {
                 name: conversation.metadata?.customerName || 'Usuario',
                 phone: message.from,
                 category: conversation.category,
-                documentNumber: conversation.metadata?.documentNumber || '',
-                email: conversation.metadata?.email || '',
-                address: conversation.metadata?.address || '',
+                documentNumber: conversation.metadata?.documentNumber || 'No especificado',
+                email: conversation.metadata?.email,
+                address: conversation.metadata?.address || 'No especificado',
                 ...this._getServiceSpecificData(conversation)
             };
 
-            // Procesar la queja con el agente legal
+            // Procesar con el agente legal
             const result = await this.legalAgentSystem.processComplaint(
                 conversation.category,
                 conversation.getMessages(),
                 customerData
             );
 
-            // Generar el documento
+            // Generar documento
             const doc = await this.documentService.generateDocument(
                 conversation.category,
                 result,
                 customerData
             );
 
-            // Notificar éxito al usuario
+            // Confirmar generación exitosa
             await this.whatsappService.sendTextMessage(
                 message.from,
                 "¡Tu documento ha sido generado exitosamente! Te lo enviaré por correo electrónico."
             );
 
-            // Actualizar metadata de la conversación
+            // Actualizar metadata
             await this.conversationService.updateConversationMetadata(
                 message.from,
                 {
@@ -98,7 +101,7 @@ class DocumentRequestHandler {
                 metadata: {
                     timestamp: new Date().toISOString(),
                     category: conversation.category,
-                    customerEmail: conversation.metadata.email
+                    customerEmail: customerData.email
                 }
             };
 
@@ -121,50 +124,23 @@ class DocumentRequestHandler {
         switch(conversation.category) {
             case 'transporte_aereo':
                 return {
-                    numero_reserva: conversation.metadata?.numero_reserva,
-                    numero_vuelo: conversation.metadata?.numero_vuelo,
-                    fecha_vuelo: conversation.metadata?.fecha_vuelo,
-                    ruta: conversation.metadata?.ruta,
-                    valor_tiquete: conversation.metadata?.valor_tiquete
+                    numero_reserva: conversation.metadata?.numero_reserva || 'No especificado',
+                    numero_vuelo: conversation.metadata?.numero_vuelo || 'No especificado',
+                    fecha_vuelo: conversation.metadata?.fecha_vuelo || 'No especificado',
+                    ruta: conversation.metadata?.ruta || 'No especificado',
+                    valor_tiquete: conversation.metadata?.valor_tiquete || 'No especificado'
                 };
             case 'servicios_publicos':
                 return {
-                    cuenta_contrato: conversation.metadata?.cuenta_contrato,
-                    tipo_servicio: conversation.metadata?.tipo_servicio,
-                    periodo_facturacion: conversation.metadata?.periodo_facturacion
+                    cuenta_contrato: conversation.metadata?.cuenta_contrato || 'No especificado',
+                    tipo_servicio: conversation.metadata?.tipo_servicio || 'No especificado',
+                    periodo_facturacion: conversation.metadata?.periodo_facturacion || 'No especificado'
                 };
             case 'telecomunicaciones':
                 return {
-                    numero_linea: conversation.metadata?.numero_linea,
-                    plan_contratado: conversation.metadata?.plan_contratado,
-                    fecha_contratacion: conversation.metadata?.fecha_contratacion
-                };
-            default:
-                return {};
-        }
-    }
-
-    _getServiceSpecificData(conversation) {
-        switch(conversation.category) {
-            case 'transporte_aereo':
-                return {
-                    numero_reserva: conversation.metadata?.numero_reserva,
-                    numero_vuelo: conversation.metadata?.numero_vuelo,
-                    fecha_vuelo: conversation.metadata?.fecha_vuelo,
-                    ruta: conversation.metadata?.ruta,
-                    valor_tiquete: conversation.metadata?.valor_tiquete
-                };
-            case 'servicios_publicos':
-                return {
-                    cuenta_contrato: conversation.metadata?.cuenta_contrato,
-                    tipo_servicio: conversation.metadata?.tipo_servicio,
-                    periodo_facturacion: conversation.metadata?.periodo_facturacion
-                };
-            case 'telecomunicaciones':
-                return {
-                    numero_linea: conversation.metadata?.numero_linea,
-                    plan_contratado: conversation.metadata?.plan_contratado,
-                    fecha_contratacion: conversation.metadata?.fecha_contratacion
+                    numero_linea: conversation.metadata?.numero_linea || 'No especificado',
+                    plan_contratado: conversation.metadata?.plan_contratado || 'No especificado',
+                    fecha_contratacion: conversation.metadata?.fecha_contratacion || 'No especificado'
                 };
             default:
                 return {};
