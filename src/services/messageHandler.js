@@ -1,4 +1,4 @@
-// src/services/messageHandler.js
+// src/services/documentHandler.js
 const { logInfo, logError } = require('../utils/logger');
 
 class DocumentRequestHandler {
@@ -23,102 +23,151 @@ class DocumentRequestHandler {
             logInfo('Processing document request', {
                 whatsappId: message.from,
                 category: conversation?.category,
-                hasEmail: Boolean(conversation.metadata?.email)
+                conversationId: conversation?.whatsappId
             });
-    
-            // Extraer datos de WhatsApp
-            const userName = conversation.metadata?.customerName || 'Usuario';
-            const userPhone = conversation.whatsappId;
-    
-            // Verificar si ya tenemos el correo
-            if (!conversation.metadata?.email) {
-                await whatsappService.sendTextMessage(
+
+            // Validar que la conversación tenga una categoría asignada
+            if (!conversation?.category || conversation.category === 'unknown') {
+                await this.whatsappService.sendTextMessage(
                     message.from,
-                    "Para generarte el documento legal, necesito tu correo electrónico. Por favor, escríbelo a continuación."
+                    "Para generar el documento, primero necesito que me cuentes tu caso."
                 );
-    
-                // Marcar conversación como esperando email
-                await this.updateConversationMetadata(conversation.whatsappId, {
-                    awaitingEmail: true,
-                    documentRequestPending: true,
-                    customerName: userName,
-                    phone: userPhone
-                });
-    
-                return { success: true, status: 'AWAITING_EMAIL' };
+                return { success: false, reason: 'NO_CATEGORY' };
             }
-    
-            // Si ya tenemos el correo, proceder con el documento
-            return await this._processDocumentWithAgent(conversation);
-    
+
+            // Validar datos necesarios
+            if (!conversation.metadata?.email) {
+                await this.whatsappService.sendTextMessage(
+                    message.from,
+                    "Para enviarte el documento necesito tu correo electrónico. ¿Me lo podrías proporcionar?"
+                );
+                return { success: false, reason: 'NO_EMAIL' };
+            }
+
+            // Notificar al usuario que se está procesando su solicitud
+            await this.whatsappService.sendTextMessage(
+                message.from,
+                "Estoy procesando tu solicitud para generar el documento legal..."
+            );
+
+            // Preparar datos para el agente legal
+            const customerData = {
+                name: conversation.metadata?.customerName || 'Usuario',
+                phone: message.from,
+                category: conversation.category,
+                documentNumber: conversation.metadata?.documentNumber || '',
+                email: conversation.metadata?.email || '',
+                address: conversation.metadata?.address || '',
+                ...this._getServiceSpecificData(conversation)
+            };
+
+            // Procesar la queja con el agente legal
+            const result = await this.legalAgentSystem.processComplaint(
+                conversation.category,
+                conversation.getMessages(),
+                customerData
+            );
+
+            // Generar el documento
+            const doc = await this.documentService.generateDocument(
+                conversation.category,
+                result,
+                customerData
+            );
+
+            // Notificar éxito al usuario
+            await this.whatsappService.sendTextMessage(
+                message.from,
+                "¡Tu documento ha sido generado exitosamente! Te lo enviaré por correo electrónico."
+            );
+
+            // Actualizar metadata de la conversación
+            await this.conversationService.updateConversationMetadata(
+                message.from,
+                {
+                    documentGenerated: true,
+                    documentGeneratedAt: new Date().toISOString(),
+                    documentReference: result.reference
+                }
+            );
+
+            return { 
+                success: true, 
+                type: 'DOCUMENT_GENERATED',
+                document: doc,
+                metadata: {
+                    timestamp: new Date().toISOString(),
+                    category: conversation.category,
+                    customerEmail: conversation.metadata.email
+                }
+            };
+
         } catch (error) {
-            logError('Error processing document request', {
+            logError('Error in document request handler', {
                 error: error.message,
                 whatsappId: message.from
             });
-    
-            await whatsappService.sendTextMessage(
+
+            await this.whatsappService.sendTextMessage(
                 message.from,
                 "Lo siento, hubo un error procesando tu solicitud. Por favor, intenta nuevamente."
             );
-    
-            return { success: false, error };
+
+            return { success: false, reason: 'PROCESSING_ERROR', error };
         }
     }
-    
-    async _processDocumentWithAgent(conversation) {
-        try {
-            // Preparar datos del usuario
-            const userData = {
-                name: conversation.metadata?.customerName,
-                phone: conversation.whatsappId,
-                email: conversation.metadata?.email
-            };
-    
-            // Preparar la conversación para el agente
-            const conversationText = conversation.messages
-                .filter(msg => msg.type === 'text')
-                .map(msg => {
-                    const role = msg.from === conversation.whatsappId ? 'Usuario' : 'JULI';
-                    return `${role}: ${msg.text.body}`;
-                })
-                .join('\n');
-    
-            // Procesar con el agente legal
-            const result = await legalAgentSystem.processComplaint(
-                conversation.category || 'unknown',
-                conversationText,
-                userData
-            );
-    
-            // Generar documento
-            await documentService.generateDocument(
-                conversation.category,
-                result,
-                userData
-            );
-    
-            // Notificar al usuario
-            await whatsappService.sendTextMessage(
-                conversation.whatsappId,
-                "¡Tu documento ha sido generado y enviado a tu correo electrónico!"
-            );
-    
-            // Actualizar metadata de la conversación
-            await this.updateConversationMetadata(conversation.whatsappId, {
-                documentGenerated: true,
-                documentGeneratedTimestamp: new Date().toISOString(),
-                awaitingEmail: false,
-                documentRequestPending: false
-            });
-    
-            return { success: true, status: 'DOCUMENT_GENERATED' };
-        } catch (error) {
-            logError('Error generating document', {
-                error: error.message,
-                whatsappId: conversation.whatsappId
-            });
-            throw error;
+
+    _getServiceSpecificData(conversation) {
+        switch(conversation.category) {
+            case 'transporte_aereo':
+                return {
+                    numero_reserva: conversation.metadata?.numero_reserva,
+                    numero_vuelo: conversation.metadata?.numero_vuelo,
+                    fecha_vuelo: conversation.metadata?.fecha_vuelo,
+                    ruta: conversation.metadata?.ruta,
+                    valor_tiquete: conversation.metadata?.valor_tiquete
+                };
+            case 'servicios_publicos':
+                return {
+                    cuenta_contrato: conversation.metadata?.cuenta_contrato,
+                    tipo_servicio: conversation.metadata?.tipo_servicio,
+                    periodo_facturacion: conversation.metadata?.periodo_facturacion
+                };
+            case 'telecomunicaciones':
+                return {
+                    numero_linea: conversation.metadata?.numero_linea,
+                    plan_contratado: conversation.metadata?.plan_contratado,
+                    fecha_contratacion: conversation.metadata?.fecha_contratacion
+                };
+            default:
+                return {};
+        }
+    }
+
+    _getServiceSpecificData(conversation) {
+        switch(conversation.category) {
+            case 'transporte_aereo':
+                return {
+                    numero_reserva: conversation.metadata?.numero_reserva,
+                    numero_vuelo: conversation.metadata?.numero_vuelo,
+                    fecha_vuelo: conversation.metadata?.fecha_vuelo,
+                    ruta: conversation.metadata?.ruta,
+                    valor_tiquete: conversation.metadata?.valor_tiquete
+                };
+            case 'servicios_publicos':
+                return {
+                    cuenta_contrato: conversation.metadata?.cuenta_contrato,
+                    tipo_servicio: conversation.metadata?.tipo_servicio,
+                    periodo_facturacion: conversation.metadata?.periodo_facturacion
+                };
+            case 'telecomunicaciones':
+                return {
+                    numero_linea: conversation.metadata?.numero_linea,
+                    plan_contratado: conversation.metadata?.plan_contratado,
+                    fecha_contratacion: conversation.metadata?.fecha_contratacion
+                };
+            default:
+                return {};
         }
     }
 }
