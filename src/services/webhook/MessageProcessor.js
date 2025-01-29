@@ -1,5 +1,6 @@
 // src/services/webhook/MessageProcessor.js
 const { logInfo, logError } = require('../../utils/logger');
+const DocumentRequestHandler = require('../messageHandler');
 
 class MessageProcessor {
     constructor(conversationService, whatsappService, wsManager, legalAgentSystem, documentService) {
@@ -8,6 +9,17 @@ class MessageProcessor {
         this.wsManager = wsManager;
         this.legalAgentSystem = legalAgentSystem;
         this.documentService = documentService;
+        
+        // Inicializar DocumentRequestHandler
+        this.documentHandler = new DocumentRequestHandler(
+            conversationService,
+            whatsappService,
+            legalAgentSystem,
+            documentService
+        );
+
+        // Trigger específico para documentos
+        this.DOCUMENT_TRIGGER = "juli quiero el documento";
     }
 
     async processMessage(message, context) {
@@ -27,10 +39,18 @@ class MessageProcessor {
                 return { success: true, status: 'DUPLICATE' };
             }
 
-            // 3. Procesar mensaje según el estado de la conversación
+            // 3. Verificar si es una solicitud de documento
+            if (this._isDocumentRequest(message)) {
+                logInfo('Document request detected', { from: message.from });
+                const documentResult = await this.documentHandler.handleDocumentRequest(message, conversation);
+                this._updateWebSocket(conversation);
+                return { success: true, status: 'DOCUMENT_REQUEST_HANDLED', ...documentResult };
+            }
+
+            // 4. Procesar mensaje según el estado de la conversación
             const result = await this._processMessageByState(message, conversation, context);
 
-            // 4. Actualizar WebSocket si está disponible
+            // 5. Actualizar WebSocket si está disponible
             this._updateWebSocket(conversation);
 
             return result;
@@ -43,6 +63,12 @@ class MessageProcessor {
             });
             throw error;
         }
+    }
+
+    _isDocumentRequest(message) {
+        if (message.type !== 'text') return false;
+        const normalizedText = message.text.body.toLowerCase().trim();
+        return normalizedText.includes(this.DOCUMENT_TRIGGER);
     }
 
     async _getOrCreateConversation(message, context) {
